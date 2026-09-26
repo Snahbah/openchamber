@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { createAgentMemoryActions } from './actions.js';
 import { createAgentMemoryRuntime } from './runtime.js';
+import { createVaultPromotionRuntime } from './vault-promotion.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
 
 const DIRECTORY = '/tmp/some-project';
@@ -18,6 +19,7 @@ class TestError extends Error {
 
 let actions;
 let runtime;
+let vaultPromotion;
 
 beforeEach(async () => {
   const rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-memory-actions-'));
@@ -27,8 +29,14 @@ beforeEach(async () => {
     userConfigRoot: path.join(rootDir, 'config'),
     projectsDirPath: path.join(rootDir, 'config', 'projects'),
   });
+  vaultPromotion = createVaultPromotionRuntime({
+    fsPromises,
+    path,
+    vaultArtifactsDir: path.join(rootDir, 'vault', 'Artifacts'),
+  });
   actions = createAgentMemoryActions({
     agentMemoryRuntime: runtime,
+    vaultPromotion,
     createError: (message, status) => new TestError(message, status),
     resolveProjectId: async (directory) => createProjectIdFromPath(directory),
   });
@@ -292,6 +300,60 @@ describe('delete', () => {
   test('reports a miss instead of claiming success', async () => {
     await expect(actions.execute('memory.delete', { scope: 'global', memoryId: 'absent' }, DIRECTORY))
       .rejects.toThrow('No memory has that id');
+  });
+});
+
+describe('promote', () => {
+  test('writes a memory into the vault as a note and leaves the source intact', async () => {
+    const saved = await actions.execute('memory.save', {
+      scope: 'project', title: 'Uses bun', body: 'Tests run with bun test.',
+    }, DIRECTORY);
+
+    const result = await actions.execute('memory.promote', { memoryId: saved.memory.memoryId }, DIRECTORY);
+
+    expect(result.promoted).toBe(true);
+    expect(result.memoryId).toBe(saved.memory.memoryId);
+
+    const note = await fsPromises.readFile(result.notePath, 'utf8');
+    expect(note).toContain('# Uses bun');
+    expect(note).toContain('Tests run with bun test.');
+
+    // The source memory is neither duplicated nor lost.
+    const stored = await runtime.read({ scope: 'project', projectId: createProjectIdFromPath(DIRECTORY) });
+    expect(stored.entries).toHaveLength(1);
+  });
+
+  test('promotes by title when no id is given', async () => {
+    await actions.execute('memory.save', { scope: 'global', title: 'Prefers bun', body: 'Body.' }, DIRECTORY);
+
+    const result = await actions.execute('memory.promote', { title: 'prefers BUN' }, DIRECTORY);
+
+    expect(result.promoted).toBe(true);
+    const note = await fsPromises.readFile(result.notePath, 'utf8');
+    expect(note).toContain('# Prefers bun');
+  });
+
+  test('requires memoryId or title', async () => {
+    await expect(actions.execute('memory.promote', {}, DIRECTORY))
+      .rejects.toThrow('memory.promote requires memoryId or title');
+  });
+
+  test('reports a miss instead of writing an empty note', async () => {
+    await expect(actions.execute('memory.promote', { memoryId: 'absent' }, DIRECTORY))
+      .rejects.toThrow('No memory matches');
+  });
+
+  test('is gated when memory is switched off', async () => {
+    const disabled = createAgentMemoryActions({
+      agentMemoryRuntime: runtime,
+      vaultPromotion,
+      createError: (message, status) => new TestError(message, status),
+      resolveProjectId: async (directory) => createProjectIdFromPath(directory),
+      isAgentMemoryEnabled: async () => false,
+    });
+
+    await expect(disabled.execute('memory.promote', { memoryId: 'x' }, DIRECTORY))
+      .rejects.toThrow('switched off');
   });
 });
 

@@ -38,6 +38,7 @@ const toFullEntry = (entry, scope) => ({ ...toSummary(entry, scope), body: entry
 export const createAgentMemoryActions = (dependencies) => {
   const {
     agentMemoryRuntime,
+    vaultPromotion,
     createError,
     onMemoryChanged,
     resolveProjectId: resolveProjectIdForDirectory,
@@ -111,20 +112,20 @@ export const createAgentMemoryActions = (dependencies) => {
   };
 
   /**
-   * Reading by title as well as by id is deliberate: the session index lists
-   * titles only, so requiring an id would force a list call before every read
-   * just to translate what the agent can already see.
+   * Finds a stored entry by id or title, honoring the same scope rules `read`
+   * uses. Returns the raw entry and its scope, or fails with the errors `read`
+   * would raise. Shared by `read` and `promote` so the two always agree on what
+   * "this memory" resolves to.
    *
-   * Scope is optional here. It decides everything for a write — a fact filed
-   * globally reaches every project — but for a read it is only which drawer to
-   * open, and demanding it turned a legible request into an error the model had
-   * to recover from. Omitted, both stores are searched.
+   * Reading by title as well as by id is deliberate: the session index lists
+   * titles only. Scope is optional — it decides everything for a write, but for
+   * a look-up it is only which drawer to open, and omitted, both are searched.
    */
-  const read = async (input, contextDirectory) => {
+  const findMemory = async (input, contextDirectory, actionName) => {
     const memoryId = asNonEmptyString(input.memoryId);
     const title = asNonEmptyString(input.title);
     if (!memoryId && !title) {
-      fail('memory.read requires memoryId or title', 400);
+      fail(`${actionName} requires memoryId or title`, 400);
     }
 
     const matches = (entry) => (memoryId
@@ -139,7 +140,7 @@ export const createAgentMemoryActions = (dependencies) => {
       if (!found) {
         fail('No memory matches that id or title in this scope', 404);
       }
-      return { memory: toFullEntry(found, target.scope) };
+      return { entry: found, scope: target.scope };
     }
 
     const directory = asNonEmptyString(contextDirectory);
@@ -150,11 +151,11 @@ export const createAgentMemoryActions = (dependencies) => {
     if (projectMatch) {
       // Project first: when both stores hold the same title, the one about this
       // codebase is the one being asked about.
-      return { memory: toFullEntry(projectMatch, 'project') };
+      return { entry: projectMatch, scope: 'project' };
     }
     const globalMatch = result.global.find(matches);
     if (globalMatch) {
-      return { memory: toFullEntry(globalMatch, 'global') };
+      return { entry: globalMatch, scope: 'global' };
     }
     if (result.globalFailed || result.projectFailed) {
       // Never reported as "no such memory": a store that failed to load may well
@@ -162,6 +163,28 @@ export const createAgentMemoryActions = (dependencies) => {
       fail('Stored memory could not be read; try again before assuming it is absent', 503);
     }
     fail('No memory matches that id or title', 404);
+  };
+
+  const read = async (input, contextDirectory) => {
+    const { entry, scope } = await findMemory(input, contextDirectory, 'memory.read');
+    return { memory: toFullEntry(entry, scope) };
+  };
+
+  /**
+   * Promote a memory into the Agents Vault as a Markdown note with frontmatter.
+   *
+   * Deliberate and visible: it runs only on an explicit `memory.promote` call,
+   * never unprompted. It reads the entry and writes the note; it does not touch
+   * the source memory.json entry, and it does not run git. A re-promotion of
+   * the same memory updates its own note rather than creating a second.
+   */
+  const promote = async (input, contextDirectory) => {
+    if (!vaultPromotion?.promote) {
+      fail('Vault promotion is not available on this server', 503);
+    }
+    const { entry, scope } = await findMemory(input, contextDirectory, 'memory.promote');
+    const result = await vaultPromotion.promote(entry, scope);
+    return { promoted: true, memoryId: entry.id, notePath: result.path };
   };
 
   const save = async (input, contextDirectory) => {
@@ -235,6 +258,7 @@ export const createAgentMemoryActions = (dependencies) => {
       case 'memory.read': return read(input, contextDirectory);
       case 'memory.save': return save(input, contextDirectory);
       case 'memory.delete': return remove(input, contextDirectory);
+      case 'memory.promote': return promote(input, contextDirectory);
       default: return fail(`Unsupported memory action: ${action || 'missing'}`, 400);
     }
   };

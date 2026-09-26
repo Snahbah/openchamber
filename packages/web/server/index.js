@@ -110,6 +110,7 @@ import { migrateLegacyUserDirs } from './lib/data-dir-migration.js';
 import { createProjectContextRuntime } from './lib/project-context/runtime.js';
 import { createAgentMemoryRuntime } from './lib/agent-memory/runtime.js';
 import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
+import { createVaultPromotionRuntime } from './lib/agent-memory/vault-promotion.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
 import { isAgentMemoryFeatureAvailable } from './lib/agent-memory/feature-flag.js';
 import { resolvePrimaryWorktreeRoot } from './lib/git/service.js';
@@ -583,6 +584,17 @@ const agentMemoryRuntime = createAgentMemoryRuntime({
   path,
   projectsDirPath: OPENCHAMBER_PROJECTS_CONFIG_DIR,
   userConfigRoot: OPENCHAMBER_USER_CONFIG_ROOT,
+});
+
+const agentsVaultArtifactsDir = path.join(
+  path.resolve(__dirname, '..', '..', '..'),
+  'Agents Vault',
+  'Artifacts',
+);
+const vaultPromotionRuntime = createVaultPromotionRuntime({
+  fsPromises,
+  path,
+  vaultArtifactsDir: agentsVaultArtifactsDir,
 });
 
 /**
@@ -1591,6 +1603,7 @@ const openChamberControlService = createOpenChamberControlService({
   },
   agentMemoryActions: createAgentMemoryActions({
     agentMemoryRuntime,
+    vaultPromotion: vaultPromotionRuntime,
     createError: (message, status) => new OpenChamberControlError(message, status),
     onMemoryChanged: emitAgentMemoryChangedEvent,
     isAgentMemoryEnabled,

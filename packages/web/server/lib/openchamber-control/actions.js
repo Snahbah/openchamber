@@ -70,6 +70,7 @@ export const OPENCHAMBER_MEMORY_ACTION_DEFINITIONS = Object.freeze([
   { action: 'memory.list', title: 'List stored memories', description: 'List stored memory titles when the session index is missing or stale; scope is global, project, or both (default)' },
   { action: 'memory.save', title: 'Remember something', description: 'Store a durable fact, preference, or reference; requires title and body, plus scope global (about the user) or project (about this codebase). Restating something already stored updates it. Do not store secrets, one-off task state, or anything the user asked you not to keep; when the user explicitly asks you to remember something, store it unless it is a secret' },
   { action: 'memory.delete', title: 'Forget a memory', description: 'Delete a memory that turned out to be wrong or obsolete; requires memoryId and scope' },
+  { action: 'memory.promote', title: 'Promote a memory to the vault', description: 'Write a stored memory into the Agents Vault as a Markdown note with frontmatter. Requires title (as the session index spells it) or memoryId; scope is optional and both stores are searched without it. The source memory entry is left unchanged; promoting the same memory again updates its note. The user reviews the note in the vault' },
 ]);
 
 export const OPENCHAMBER_MEMORY_ACTIONS = Object.freeze(

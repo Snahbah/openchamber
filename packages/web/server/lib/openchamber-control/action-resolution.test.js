@@ -11,6 +11,7 @@ describe('a namespace the tool name already implies', () => {
   test('resolves a bare action inside the calling tool', () => {
     expect(resolveAgentToolAction('read', 'openchamber_memory')).toEqual({ action: 'memory.read' });
     expect(resolveAgentToolAction('save', 'openchamber_memory')).toEqual({ action: 'memory.save' });
+    expect(resolveAgentToolAction('promote', 'openchamber_memory')).toEqual({ action: 'memory.promote' });
   });
 
   test('resolves a bare name that is ambiguous only across tools', () => {
