@@ -586,11 +586,9 @@ const agentMemoryRuntime = createAgentMemoryRuntime({
   userConfigRoot: OPENCHAMBER_USER_CONFIG_ROOT,
 });
 
-const agentsVaultArtifactsDir = path.join(
-  path.resolve(__dirname, '..', '..', '..'),
-  'Agents Vault',
-  'Artifacts',
-);
+const agentsVaultRoot = process.env.OPENCHAMBER_AGENTS_VAULT_DIR
+  || path.join(path.resolve(__dirname, '..', '..', '..'), 'Agents Vault');
+const agentsVaultArtifactsDir = path.join(agentsVaultRoot, 'Artifacts');
 const vaultPromotionRuntime = createVaultPromotionRuntime({
   fsPromises,
   path,
