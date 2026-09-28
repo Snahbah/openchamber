@@ -430,7 +430,11 @@ describe('managed agent tool runtime', () => {
       .send({ input: { action: 'projects.list' }, sessionID: 'ses_other' })
       .then((response) => response);
     // Let both requests reach the service before cancelling one session.
-    await vi.waitFor(() => expect(executeAction).toHaveBeenCalledTimes(2));
+    // (`vi.waitFor` is Vitest-only; poll so this also runs under `bun test`.)
+    for (let attempt = 0; attempt < 200 && executeAction.mock.calls.length < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(executeAction).toHaveBeenCalledTimes(2);
 
     expect(runtime.abortSession('ses_cancel')).toBe(1);
     const response = await pending;
