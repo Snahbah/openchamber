@@ -184,6 +184,9 @@ export const createAgentMemoryActions = (dependencies) => {
     }
     const { entry, scope } = await findMemory(input, contextDirectory, 'memory.promote');
     const result = await vaultPromotion.promote(entry, scope);
+    // Visibility: a promotion is a deliberate act and its note lands outside
+    // the memory store, so a successful write is logged server-side.
+    console.log(`memory.promote: wrote ${result.path} (${scope})`);
     return { promoted: true, memoryId: entry.id, notePath: result.path };
   };
 
