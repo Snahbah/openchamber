@@ -11,9 +11,32 @@
  * variable set is the only thing that decides — no build step bakes it in.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
-export const isAgentMemoryFeatureAvailable = () => {
-  const raw = process.env.OPENCHAMBER_MEMORY_ENABLE;
+export const readStartupEnvValue = () => {
+  try {
+    const startupPath = path.join(
+      process.env.USERPROFILE || process.env.HOME || '.',
+      '.config',
+      'openchamber',
+      'startup.env',
+    );
+    if (!fs.existsSync(startupPath)) return null;
+    const content = fs.readFileSync(startupPath, 'utf8');
+    const match = content.match(/^OPENCHAMBER_MEMORY_ENABLE=['"]?([^'"\r\n]+)['"]?/m);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+};
+
+export const isAgentMemoryFeatureAvailable = ({ ignoreFallback = false } = {}) => {
+  const envVal = process.env.OPENCHAMBER_MEMORY_ENABLE;
+  const raw = envVal !== undefined
+    ? envVal
+    : (ignoreFallback || process.env.NODE_ENV === 'test' ? undefined : readStartupEnvValue());
   return typeof raw === 'string' && TRUTHY.has(raw.trim().toLowerCase());
 };

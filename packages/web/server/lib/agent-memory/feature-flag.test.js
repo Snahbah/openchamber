@@ -35,4 +35,16 @@ describe('the unreleased feature gate', () => {
     process.env.OPENCHAMBER_MEMORY_ENABLE = '1';
     expect(isAgentMemoryFeatureAvailable()).toBe(true);
   });
+
+  test('falls back to startup.env when not in test mode or explicitly requested', () => {
+    delete process.env.OPENCHAMBER_MEMORY_ENABLE;
+    // When ignoreFallback is false and NODE_ENV is unset, it reads startup.env
+    const originalEnv = process.env.NODE_ENV;
+    try {
+      delete process.env.NODE_ENV;
+      expect(isAgentMemoryFeatureAvailable()).toBe(true);
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+    }
+  });
 });
