@@ -19,6 +19,8 @@
 
 const MEMORY_TYPES = new Set(['fact', 'preference', 'reference']);
 
+import { looksLikeInjection } from './threat-patterns.js';
+
 const asNonEmptyString = (value) => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -39,6 +41,7 @@ export const createAgentMemoryActions = (dependencies) => {
   const {
     agentMemoryRuntime,
     vaultPromotion,
+    vaultIndexRuntime,
     createError,
     onMemoryChanged,
     resolveProjectId: resolveProjectIdForDirectory,
@@ -183,11 +186,28 @@ export const createAgentMemoryActions = (dependencies) => {
       fail('Vault promotion is not available on this server', 503);
     }
     const { entry, scope } = await findMemory(input, contextDirectory, 'memory.promote');
+    if (entry.flagged || looksLikeInjection(entry.title, entry.body)) {
+      fail('Flagged memory cannot be promoted: marked as potential instruction injection', 400);
+    }
     const result = await vaultPromotion.promote(entry, scope);
     // Visibility: a promotion is a deliberate act and its note lands outside
     // the memory store, so a successful write is logged server-side.
     console.log(`memory.promote: wrote ${result.path} (${scope})`);
     return { promoted: true, memoryId: entry.id, notePath: result.path };
+  };
+
+  const query = async (input) => {
+    if (!vaultIndexRuntime?.query) {
+      fail('Vault semantic index is not available on this server', 503);
+    }
+    const text = asNonEmptyString(input.text)
+      || asNonEmptyString(input.query)
+      || asNonEmptyString(input.body)
+      || asNonEmptyString(input.title);
+    if (!text) fail('query text is required for memory.query (provide body, query, or title)', 400);
+    const limit = typeof input.limit === 'number' && input.limit > 0 ? input.limit : 5;
+    const results = await vaultIndexRuntime.query(text, limit);
+    return { ok: true, results };
   };
 
   const save = async (input, contextDirectory) => {
@@ -262,6 +282,7 @@ export const createAgentMemoryActions = (dependencies) => {
       case 'memory.save': return save(input, contextDirectory);
       case 'memory.delete': return remove(input, contextDirectory);
       case 'memory.promote': return promote(input, contextDirectory);
+      case 'memory.query': return query(input);
       default: return fail(`Unsupported memory action: ${action || 'missing'}`, 400);
     }
   };

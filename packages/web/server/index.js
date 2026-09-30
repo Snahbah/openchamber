@@ -85,6 +85,12 @@ import { createSessionGoalRuntime } from './lib/session-goal/runtime.js';
 import { createContextObligatoryRuntime } from './lib/context-obligatory/runtime.js';
 import { createLinearSessionStatusRuntime } from './lib/linear/status-runtime.js';
 import { createSessionKnowledgeRuntime } from './lib/session-knowledge/runtime.js';
+import { createVaultIndexRuntime } from './lib/vault-index/runtime.js';
+import { createEventLog } from './lib/episodic-log/event-log.js';
+import { createReflectionEngine } from './lib/compaction/reflection-engine.js';
+import { assessSalience } from './lib/compaction/salience.js';
+import { staleEchoMotifs } from './lib/compaction/staleness.js';
+import { createRecallAssembly } from './lib/recall/assembly.js';
 import { createScheduledTasksRuntime } from './lib/scheduled-tasks/runtime.js';
 import { createServerStartupRuntime } from './lib/opencode/server-startup-runtime.js';
 import { createTunnelWiringRuntime } from './lib/opencode/tunnel-wiring-runtime.js';
@@ -595,6 +601,42 @@ const vaultPromotionRuntime = createVaultPromotionRuntime({
   vaultArtifactsDir: agentsVaultArtifactsDir,
 });
 
+// Tier 2 semantic index: the Agents Vault, embedded and stored in a local
+// LanceDB table. Lazy — the model and table open only on first sync/query, so
+// the server boots without importing onnxruntime-web or the LanceDB binding.
+const embedderDir = process.env.OPENCHAMBER_EMBEDDER_DIR
+  || path.join(process.env.USERPROFILE || process.env.HOME || '.', '.cache', 'openchamber', 'embedder', 'bge-base-en-v1.5');
+const vaultIndexRuntime = createVaultIndexRuntime({
+  vaultDir: agentsVaultRoot,
+  dbPath: path.join(OPENCHAMBER_DATA_DIR, 'stores', 'vault'),
+  tableName: 'vault',
+  modelPath: path.join(embedderDir, 'onnx', 'model.onnx'),
+  vocabPath: path.join(embedderDir, 'vocab.txt'),
+});
+
+// Tier 1 episodic event log (River): append-only Lamport-sequenced JSONL log
+const episodicEventLog = createEventLog({
+  fsPromises: fs.promises,
+  path,
+  logDir: path.join(OPENCHAMBER_DATA_DIR, 'episodic-log'),
+  strictProvenance: true,
+});
+void episodicEventLog.boot().catch((err) => {
+  console.warn('[episodic-log] failed to boot:', err?.message || err);
+});
+
+// Loops 2 & 3: Autonomous Reflection & Dream Engine
+const reflectionEngine = createReflectionEngine({
+  episodicLog: episodicEventLog,
+  vaultPromotion: vaultPromotionRuntime,
+  reflectionThreshold: 3,
+  reflectionCooldownMs: 60_000,
+  dreamThreshold: 3,
+  logger: (msg, payload) => console.log(`[memory-reflection] ${msg}`, payload?.timestamp || ''),
+});
+// Start autonomous background reflection timer
+reflectionEngine.start(60_000);
+
 /**
  * One switch for everything memory-related. It gates the tool, these routes,
  * and the session index alike, so turning memory off leaves nothing behind
@@ -1043,6 +1085,19 @@ globalMessageStreamHub.subscribeEvent((event) => {
     sessionGoalRuntime.processPayload(payload, directory || payload.properties?.directory || '');
     contextObligatoryRuntime.processPayload(payload, directory || payload.properties?.directory || '');
     linearSessionStatusRuntime.processPayload(payload);
+
+    // Ingest session event into Tier 1 episodic event log
+    if (isAgentMemoryFeatureAvailable()) {
+      void episodicEventLog.append({
+        kind: payload.type || 'session.event',
+        source_provenance: { substrate_kind: 'session_event', directory: directory || payload.properties?.directory || '' },
+        payload: {
+          sessionId: payload.properties?.sessionID || payload.sessionId || '',
+          type: payload.type,
+          summary: payload.properties?.message || payload.properties?.title || '',
+        },
+      }).catch(() => {});
+    }
   }
 });
 
@@ -1602,6 +1657,7 @@ const openChamberControlService = createOpenChamberControlService({
   agentMemoryActions: createAgentMemoryActions({
     agentMemoryRuntime,
     vaultPromotion: vaultPromotionRuntime,
+    vaultIndexRuntime,
     createError: (message, status) => new OpenChamberControlError(message, status),
     onMemoryChanged: emitAgentMemoryChangedEvent,
     isAgentMemoryEnabled,
@@ -2103,6 +2159,132 @@ async function main(options = {}) {
   relayService.registerRoutes(app);
 
   registerBrowserControlRoutes(app, { express, broker: browserControlBroker });
+
+  app.post('/api/vault-index/sync', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const results = await vaultIndexRuntime.syncVault(req.body || {});
+      res.json({ ok: true, indexed: results.length, results });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/vault-index/query', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const text = req.body?.text || req.body?.query;
+      if (!text || typeof text !== 'string') {
+        return res.status(400).json({ ok: false, error: 'text is required' });
+      }
+      const rows = await vaultIndexRuntime.query(text, req.body?.limit ?? 5);
+      res.json({ ok: true, results: rows });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.get('/api/episodic-log/tail', async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const limit = parseInt(req.query?.limit, 10) || 50;
+      const events = await episodicEventLog.tail(limit);
+      res.json({ ok: true, count: events.length, events });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/salience', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const beats = Array.isArray(req.body?.beats) ? req.body.beats : [];
+      const result = assessSalience(beats);
+      res.json({ ok: true, salience: result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/compact', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const inscriptions = Array.isArray(req.body?.inscriptions) ? req.body.inscriptions : [];
+      const staleMotifs = staleEchoMotifs(inscriptions, { minReinscriptions: req.body?.minReinscriptions || 3 });
+      res.json({ ok: true, staleMotifs });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/recall', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      const interlocutor = req.body?.interlocutor || 'project';
+      const kinds = Array.isArray(req.body?.kinds) ? req.body.kinds : [
+        { kind: 'typed_memory', priority: 1, share: 0.40 },
+        { kind: 'diary', priority: 2, share: 0.30, freshnessDays: 7 },
+        { kind: 'episodic', priority: 3, share: 0.30, freshnessDays: 14 },
+      ];
+      const assembly = createRecallAssembly({ kinds, totalChars: req.body?.totalChars || 4000 });
+      const context = assembly.assemble({ entries, interlocutor });
+      res.json({ ok: true, context });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/reflect', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const force = req.body?.force === true;
+      const result = await reflectionEngine.reflect({ force });
+      res.json({ ok: true, result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/dream', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const force = req.body?.force === true;
+      const result = await reflectionEngine.maybeDream({ force });
+      res.json({ ok: true, result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.get('/api/memory/loops/status', async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const status = reflectionEngine.status();
+      const recentEvents = await episodicEventLog.tail(10);
+      res.json({ ok: true, loopStatus: status, recentTailCount: recentEvents.length });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
 
   // One scanner backs both discovery and the tunnel allowlist, so a port the
   // user can see is exactly a port the tunnel will dial.

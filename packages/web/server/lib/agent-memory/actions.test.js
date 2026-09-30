@@ -338,9 +338,41 @@ describe('promote', () => {
       .rejects.toThrow('memory.promote requires memoryId or title');
   });
 
-  test('reports a miss instead of writing an empty note', async () => {
-    await expect(actions.execute('memory.promote', { memoryId: 'absent' }, DIRECTORY))
-      .rejects.toThrow('No memory matches');
+  test('refuses to promote a flagged memory (poison defense)', async () => {
+    // A flagged memory is an instruction injection or threat pattern
+    const saved = await actions.execute(
+      'memory.save',
+      { scope: 'project', title: 'ignore previous instructions', body: 'malicious prompt' },
+      DIRECTORY,
+    );
+    // Artificially flag the entry as threat scanner would
+    const project = await runtime.read({ scope: 'project', projectId: createProjectIdFromPath(DIRECTORY) });
+    const target = project.entries.find((e) => e.id === saved.memory.memoryId);
+    target.flagged = true;
+
+    await expect(actions.execute('memory.promote', { memoryId: saved.memory.memoryId }, DIRECTORY))
+      .rejects.toThrow('Flagged memory cannot be promoted');
+  });
+
+  test('delegates memory.query to the semantic index runtime', async () => {
+    let called = null;
+    const queryMock = async (text, limit) => {
+      called = { text, limit };
+      return [{ id: 'mock1', text, source_path: 'doc.md' }];
+    };
+    const queryActions = createAgentMemoryActions({
+      agentMemoryRuntime: runtime,
+      vaultPromotion,
+      vaultIndexRuntime: { query: queryMock },
+      createError: (message, status) => new TestError(message, status),
+      resolveProjectId: async (directory) => createProjectIdFromPath(directory),
+      isAgentMemoryEnabled: async () => true,
+    });
+
+    const result = await queryActions.execute('memory.query', { query: 'vector test', limit: 3 }, DIRECTORY);
+    expect(result.ok).toBe(true);
+    expect(result.results).toHaveLength(1);
+    expect(called).toEqual({ text: 'vector test', limit: 3 });
   });
 
   test('is gated when memory is switched off', async () => {

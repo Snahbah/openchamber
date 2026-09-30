@@ -10,7 +10,7 @@
  * file. A failed write leaves the previous note in place.
  */
 
-const UNSAFE_FILENAME_CHARS = /[^a-zA-Z0-9._-]/g;
+const UNSAFE_FILENAME_CHARS = /[^a-zA-Z0-9_-]/g;
 
 const sanitizeFileName = (value) => String(value).replace(UNSAFE_FILENAME_CHARS, '_');
 
