@@ -1136,6 +1136,77 @@ const fetchGoogleModels = async (accessToken: string, projectId?: string) => {
   return null;
 };
 
+const GOOGLE_WEEKLY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+
+type GoogleSummaryBucket = {
+  window?: string;
+  remainingFraction?: number | string;
+  resetTime?: string;
+};
+
+const fetchGoogleQuotaSummary = async (
+  accessToken: string,
+  projectId?: string,
+): Promise<
+  | { ok: true; payload: { groups?: Array<{ buckets?: GoogleSummaryBucket[] }> } }
+  | { ok: false; status: number }
+> => {
+  const body = projectId ? { project: projectId } : {};
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), 15000) : null;
+  try {
+    const response = await fetch(`${GOOGLE_PRIMARY_ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        ...GOOGLE_HEADERS,
+      },
+      body: JSON.stringify(body),
+      signal: controller?.signal,
+    });
+    if (!response.ok) {
+      return { ok: false, status: response.status };
+    }
+    return { ok: true, payload: await response.json() as { groups?: Array<{ buckets?: GoogleSummaryBucket[] }> } };
+  } catch {
+    return { ok: false, status: 0 };
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+};
+
+// Account-level quota from v1internal:retrieveUserQuotaSummary — pools, not
+// per-model rows. Mirrors the web runtime so Agy renders as 5h/7d bars.
+const toGoogleSummaryUsage = (
+  groups: Array<{ buckets?: GoogleSummaryBucket[] }> | undefined,
+): { windows: Record<string, UsageWindow>; models: Record<string, ProviderUsage> } => {
+  const windows: Record<string, UsageWindow> = {};
+
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const groupWindows: Record<string, UsageWindow> = {};
+    for (const bucket of Array.isArray(group?.buckets) ? group.buckets : []) {
+      const remainingFraction = toNumber(bucket?.remainingFraction);
+      const resetAt = toTimestamp(bucket?.resetTime);
+      if (remainingFraction === null || resetAt === null) continue;
+
+      const isWeekly = bucket?.window === 'weekly';
+      groupWindows[isWeekly ? '7d' : '5h'] = toUsageWindow({
+        usedPercent: Math.max(0, Math.min(100, (1 - remainingFraction) * 100)),
+        windowSeconds: isWeekly ? GOOGLE_WEEKLY_WINDOW_SECONDS : GOOGLE_FIVE_HOUR_WINDOW_SECONDS,
+        resetAt,
+      });
+    }
+    if (!Object.keys(groupWindows).length) continue;
+    Object.assign(windows, groupWindows);
+    break;
+  }
+
+  return { windows, models: {} };
+};
+
 const fetchGoogleQuota = async (): Promise<ProviderResult> => {
   const authSources = resolveGoogleAuthSources();
   if (!authSources.length) {
@@ -1148,6 +1219,7 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
     });
   }
 
+  const windows: Record<string, UsageWindow> = {};
   const models: Record<string, ProviderUsage> = {};
   const sourceErrors: string[] = [];
 
@@ -1171,6 +1243,24 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
 
     const projectId = source.projectId ?? DEFAULT_PROJECT_ID;
     let mergedAnyModel = false;
+
+    // Antigravity reports pools, not per-model rows: use the summary so Agy
+    // renders as 5h/7d bars exactly like the web runtime does.
+    if (source.sourceId === 'antigravity') {
+      const summary = await fetchGoogleQuotaSummary(accessToken, projectId);
+      if (!summary.ok) {
+        sourceErrors.push(`${source.sourceLabel}: quota summary failed (${summary.status})`);
+        continue;
+      }
+      const { windows: summaryWindows, models: summaryModels } = toGoogleSummaryUsage(summary.payload?.groups);
+      if (!Object.keys(summaryWindows).length && !Object.keys(summaryModels).length) {
+        sourceErrors.push(`${source.sourceLabel}: quota summary carried no usable windows`);
+        continue;
+      }
+      Object.assign(windows, summaryWindows);
+      Object.assign(models, summaryModels);
+      continue;
+    }
 
     if (source.sourceId === 'gemini') {
       const quotaPayload = await fetchGoogleQuotaBuckets(accessToken, projectId);
@@ -1242,13 +1332,13 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
     }
   }
 
-  if (!Object.keys(models).length) {
+  if (!Object.keys(windows).length && !Object.keys(models).length) {
     return buildResult({
       providerId: 'google',
       providerName: 'Agy',
       ok: false,
       configured: true,
-      error: sourceErrors[0] ?? 'Failed to fetch models',
+      error: sourceErrors[0] ?? 'Failed to fetch quota',
     });
   }
 
@@ -1258,7 +1348,7 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
     ok: true,
     configured: true,
     usage: {
-      windows: {},
+      windows: Object.keys(windows).length ? windows : {},
       models: Object.keys(models).length ? models : undefined,
     },
   });
