@@ -44,6 +44,12 @@ export const formatQuotaResetLabel = (
     const isToday = resetDate.toDateString() === now.toDateString();
 
     if (isToday) {
+      // A same-day reset is a rolling window (Antigravity 5h/weekly, Claude 5h):
+      // a bare clock time is ambiguous, so show the time-until-reset explicitly.
+      const deltaSeconds = Math.floor((resetDate.getTime() - now.getTime()) / 1000);
+      if (deltaSeconds > 0) {
+        return formatResetCountdown(deltaSeconds);
+      }
       return formatTimeForPreference(resetDate, timeFormatPreference, { fallback: fallback ?? '' });
     }
 
@@ -57,6 +63,17 @@ export const formatQuotaResetLabel = (
   } catch {
     return fallback ?? '';
   }
+};
+
+/** "in 5h 19m" — the time-until-reset for a rolling window that resets today. */
+export const formatResetCountdown = (seconds: number): string => {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `in ${h}h ${m}m`;
+  if (m > 0) return `in ${m}m`;
+  return `in ${s}s`;
 };
 
 export const resolveUsageTone = (percent: number | null): 'safe' | 'warn' | 'critical' => {

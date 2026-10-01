@@ -90,3 +90,41 @@ export const fetchGoogleModels = async (accessToken, projectId) => {
 
   return null;
 };
+
+/**
+ * Account-level quota: one bucket per pool per window.
+ *
+ * fetchGoogleModels reports a single window per model, which is why the panel rendered one row
+ * per model and never showed a weekly figure. The summary reports pools instead, each with a
+ * `window` of `weekly` or `5h`.
+ *
+ * The endpoint gates on User-Agent: without the Antigravity agent string it answers
+ * 403 "You do not have a valid license of this product", so GOOGLE_HEADERS is required here,
+ * not optional.
+ *
+ * Returns a discriminated result so an authorisation failure cannot be mistaken for empty usage.
+ */
+export const fetchGoogleQuotaSummary = async (accessToken, projectId, { fetchImpl = fetch } = {}) => {
+  const body = projectId ? { project: projectId } : {};
+
+  try {
+    const response = await fetchImpl(`${GOOGLE_PRIMARY_ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        ...GOOGLE_HEADERS
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000)
+    });
+
+    if (!response.ok) {
+      return { ok: false, status: response.status };
+    }
+
+    return { ok: true, payload: await response.json() };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+};

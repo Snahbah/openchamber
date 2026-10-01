@@ -1141,7 +1141,7 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
   if (!authSources.length) {
     return buildResult({
       providerId: 'google',
-      providerName: 'Google',
+      providerName: 'Agy',
       ok: false,
       configured: false,
       error: 'Not configured',
@@ -1245,7 +1245,7 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
   if (!Object.keys(models).length) {
     return buildResult({
       providerId: 'google',
-      providerName: 'Google',
+      providerName: 'Agy',
       ok: false,
       configured: true,
       error: sourceErrors[0] ?? 'Failed to fetch models',
@@ -1254,7 +1254,7 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
 
   return buildResult({
     providerId: 'google',
-    providerName: 'Google',
+    providerName: 'Agy',
     ok: true,
     configured: true,
     usage: {
@@ -2822,6 +2822,9 @@ const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
       });
     }
 
+    // DeepSeek's /user/balance reports only REMAINING balance:
+    // total_balance = granted_balance + topped_up_balance (all remaining).
+    // No spent/usage figure exists, so the panel shows remaining balance only.
     const symbol = balanceInfo?.currency === 'CNY' ? '¥' : '$';
     const windows: Record<string, UsageWindow> = {
       credits_balance: toUsageWindow({

@@ -78,6 +78,11 @@ export const fetchQuota = async () => {
       });
     }
 
+    // DeepSeek's /user/balance reports only REMAINING balance:
+    // total_balance = granted_balance + topped_up_balance, and all three are
+    // remaining sub-balances. There is no spent/usage figure in the API, so the
+    // panel shows remaining balance only. Do NOT derive "spent" from
+    // granted_balance - total_balance (it is always <= 0).
     const isCny = balanceInfo?.currency === 'CNY';
     const symbol = isCny ? '¥' : '$';
     const valueLabel = `${symbol}${formatMoney(totalBalance)}`;

@@ -33,7 +33,7 @@ database first and the legacy file second (see the opencode module docs).
 | `cursor` | Cursor | `providers/cursor.js` | Environment/token files, OpenChamber-managed credentials, or explicit one-time Cursor import |
 | `deepseek` | DeepSeek | `providers/deepseek.js` | `deepseek` (API key under `key` or `token`) |
 | `exe-dev` | exe.dev | `providers/exe-dev.js` | Usage API token stored under `~/.config/openchamber/quota/` |
-| `google` | Google | `providers/google/index.js` | `google`, `google.oauth`, Antigravity accounts file |
+| `google` | Agy | `providers/google/index.js` | `google`, `google.oauth`, Antigravity accounts file |
 | `hyper` | Charm Hyper | `providers/hyper.js` | `hyper` (API key under `key` or `token`) |
 | `github-copilot` | GitHub Copilot | `providers/copilot.js` | `github-copilot`, `copilot` |
 | `github-copilot-addon` | GitHub Copilot Add-on | `providers/copilot.js` | `github-copilot`, `copilot` |
@@ -78,6 +78,35 @@ Claude quota reports the subscription limits Claude Code itself is bound by, rea
 - **Extra usage** is reported as the `extra_usage` window from `spend`, only while `spend.enabled` is true, with a money `valueLabel`.
 - **Rate limiting**: Anthropic returns 429 aggressively. The last successful usage payload is cached in memory and reserved during a cooldown (`Retry-After`, else five minutes, capped at one hour). The cache is keyed by a hash of the access and refresh tokens, so switching accounts drops it instead of showing the previous account's numbers.
 - **Runtime parity**: Web/Electron and VS Code preserve the last successful Claude values during the same bounded 429 cooldown. Quota dispatchers also coalesce concurrent refreshes for the same provider in each runtime, while requests for different providers remain parallel.
+
+## Google / Antigravity quota semantics
+
+`google` resolves two credential sources: an OpenCode `auth.json` entry for the Gemini CLI, and
+the Antigravity accounts file (`~/.config/opencode/antigravity-accounts.json` or the data-dir
+equivalent). Every source reports through the window shape the panel validates — `usage.windows`
+keyed `5h`/`7d`. The provider is labelled **Agy** in the panel (the id stays `google` for
+dispatch stability).
+
+- **Antigravity** accounts read `v1internal:retrieveUserQuotaSummary`, which reports pools rather
+  than models: each group carries one bucket per window (`5h` or `weekly`). Only the first group
+  that yields usable buckets becomes the provider-level windows, so the panel renders Agy exactly
+  like Claude — simple `5h`/`7d` bars and no per-model rows. Further groups (for example a separate
+  `Claude and GPT models` pool) are deliberately not surfaced: they rendered like model rows,
+  which is the per-model noise this provider exists to avoid. `fetchAvailableModels` is no longer
+  used for these accounts: its per-model `quotaInfo` carries a single window and no weekly figure
+  at all, which rendered a row per model and never a weekly bar.
+- **The summary endpoint gates on `User-Agent`.** Without the Antigravity agent string it answers
+  `403 You do not have a valid license of this product`, so `GOOGLE_HEADERS` is required on this
+  call rather than cosmetic. Requests sent without it fail as authorisation errors.
+- **Buckets without a finite `remainingFraction` and a parseable `resetTime` are skipped**, and a
+  payload whose every bucket is skipped is a failed refresh, not zero usage. The window contract
+  requires a number plus two formatted strings, so emitting `null` in those positions is a
+  validation failure rather than a missing bar.
+- **Gemini** accounts keep the model-level path (`retrieveUserQuota` buckets plus
+  `fetchAvailableModels`), which is the shape that source is known to serve.
+- Keep `packages/web/server/lib/quota/providers/google/` and
+  `packages/vscode/src/quotaProviders.ts` in sync, as with the Claude, Kimi, Copilot, and
+  OpenRouter providers.
 
 ## Add a new provider (quick steps)
 1. Choose module shape based on complexity:
