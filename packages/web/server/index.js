@@ -86,6 +86,7 @@ import { createContextObligatoryRuntime } from './lib/context-obligatory/runtime
 import { createLinearSessionStatusRuntime } from './lib/linear/status-runtime.js';
 import { createSessionKnowledgeRuntime } from './lib/session-knowledge/runtime.js';
 import { createVaultIndexRuntime } from './lib/vault-index/runtime.js';
+import { createEstateKnowledgeEngine } from './lib/vault-index/estate-knowledge.js';
 import { createEventLog } from './lib/episodic-log/event-log.js';
 import { createReflectionEngine } from './lib/compaction/reflection-engine.js';
 import { assessSalience } from './lib/compaction/salience.js';
@@ -612,6 +613,14 @@ const vaultIndexRuntime = createVaultIndexRuntime({
   tableName: 'vault',
   modelPath: path.join(embedderDir, 'onnx', 'model.onnx'),
   vocabPath: path.join(embedderDir, 'vocab.txt'),
+});
+
+// Unified Estate Knowledge Engine (Zero-daemon LanceDB in-process service)
+const baseLanceDir = path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Documents', 'GitHub', 'Lance Databases');
+const estateKnowledgeEngine = createEstateKnowledgeEngine({
+  vaultDbPath: path.join(OPENCHAMBER_DATA_DIR, 'stores', 'vault'),
+  typescriptDbPath: path.join(baseLanceDir, 'typescript_reference.lance'),
+  adobeDbPath: path.join(baseLanceDir, 'adobe_codex.lance'),
 });
 
 // Tier 1 episodic event log (River): append-only Lamport-sequenced JSONL log
@@ -1658,6 +1667,7 @@ const openChamberControlService = createOpenChamberControlService({
     agentMemoryRuntime,
     vaultPromotion: vaultPromotionRuntime,
     vaultIndexRuntime,
+    estateKnowledgeEngine,
     createError: (message, status) => new OpenChamberControlError(message, status),
     onMemoryChanged: emitAgentMemoryChangedEvent,
     isAgentMemoryEnabled,
@@ -2281,6 +2291,74 @@ async function main(options = {}) {
       const status = reflectionEngine.status();
       const recentEvents = await episodicEventLog.tail(10);
       res.json({ ok: true, loopStatus: status, recentTailCount: recentEvents.length });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/estate/query', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const text = req.body?.text || req.body?.query;
+      if (!text || typeof text !== 'string') {
+        return res.status(400).json({ ok: false, error: 'query text is required' });
+      }
+      const domain = req.body?.domain || 'all';
+      const limit = parseInt(req.body?.limit, 10) || 5;
+      const results = await estateKnowledgeEngine.query(text, { domain, limit, host: req.body?.host });
+      res.json({ ok: true, domain, results });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/adobe/guardrails', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const action = req.body?.action || req.body?.text || req.body?.query;
+      if (!action || typeof action !== 'string') {
+        return res.status(400).json({ ok: false, error: 'action text is required' });
+      }
+      const result = await estateKnowledgeEngine.checkNegativeGuardrails(action, {
+        host: req.body?.host,
+        runtime: req.body?.runtime,
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/adobe/preflight', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const code = req.body?.code || req.body?.text;
+      if (!code || typeof code !== 'string') {
+        return res.status(400).json({ ok: false, error: 'code is required' });
+      }
+      const result = await estateKnowledgeEngine.preflight(code, {
+        host: req.body?.host || 'photoshop',
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.get('/api/adobe/card/:id', async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const card = await estateKnowledgeEngine.getExecutionCard(req.params.id);
+      if (!card) return res.status(404).json({ ok: false, error: 'Card not found' });
+      res.json({ ok: true, card });
     } catch (error) {
       res.status(500).json({ ok: false, error: error?.message || String(error) });
     }

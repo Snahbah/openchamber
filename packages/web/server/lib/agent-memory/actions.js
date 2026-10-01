@@ -42,6 +42,7 @@ export const createAgentMemoryActions = (dependencies) => {
     agentMemoryRuntime,
     vaultPromotion,
     vaultIndexRuntime,
+    estateKnowledgeEngine,
     createError,
     onMemoryChanged,
     resolveProjectId: resolveProjectIdForDirectory,
@@ -197,17 +198,48 @@ export const createAgentMemoryActions = (dependencies) => {
   };
 
   const query = async (input) => {
-    if (!vaultIndexRuntime?.query) {
-      fail('Vault semantic index is not available on this server', 503);
-    }
     const text = asNonEmptyString(input.text)
       || asNonEmptyString(input.query)
       || asNonEmptyString(input.body)
       || asNonEmptyString(input.title);
     if (!text) fail('query text is required for memory.query (provide body, query, or title)', 400);
     const limit = typeof input.limit === 'number' && input.limit > 0 ? input.limit : 5;
-    const results = await vaultIndexRuntime.query(text, limit);
-    return { ok: true, results };
+    const domain = asNonEmptyString(input.domain) || 'vault';
+
+    if (estateKnowledgeEngine?.query) {
+      const results = await estateKnowledgeEngine.query(text, { domain, limit });
+      return { ok: true, domain, results };
+    }
+    if (vaultIndexRuntime?.query) {
+      const results = await vaultIndexRuntime.query(text, limit);
+      return { ok: true, domain: 'vault', results };
+    }
+    fail('Knowledge retrieval engine is not available on this server', 503);
+  };
+
+  const guardrails = async (input) => {
+    if (!estateKnowledgeEngine?.checkNegativeGuardrails) {
+      fail('Guardrails engine is not available on this server', 503);
+    }
+    const action = asNonEmptyString(input.action) || asNonEmptyString(input.body) || asNonEmptyString(input.query);
+    if (!action) fail('action is required for memory.guardrails', 400);
+    const result = await estateKnowledgeEngine.checkNegativeGuardrails(action, {
+      host: asNonEmptyString(input.host),
+      runtime: asNonEmptyString(input.runtime),
+    });
+    return { ok: true, ...result };
+  };
+
+  const preflight = async (input) => {
+    if (!estateKnowledgeEngine?.preflight) {
+      fail('Preflight engine is not available on this server', 503);
+    }
+    const code = asNonEmptyString(input.code) || asNonEmptyString(input.body);
+    if (!code) fail('code is required for memory.preflight', 400);
+    const result = await estateKnowledgeEngine.preflight(code, {
+      host: asNonEmptyString(input.host) || 'photoshop',
+    });
+    return { ok: true, ...result };
   };
 
   const save = async (input, contextDirectory) => {
@@ -283,6 +315,8 @@ export const createAgentMemoryActions = (dependencies) => {
       case 'memory.delete': return remove(input, contextDirectory);
       case 'memory.promote': return promote(input, contextDirectory);
       case 'memory.query': return query(input);
+      case 'memory.guardrails': return guardrails(input);
+      case 'memory.preflight': return preflight(input);
       default: return fail(`Unsupported memory action: ${action || 'missing'}`, 400);
     }
   };

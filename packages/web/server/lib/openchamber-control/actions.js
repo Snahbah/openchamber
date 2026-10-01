@@ -72,6 +72,8 @@ export const OPENCHAMBER_MEMORY_ACTION_DEFINITIONS = Object.freeze([
   { action: 'memory.delete', title: 'Forget a memory', description: 'Delete a memory that turned out to be wrong or obsolete; requires memoryId and scope' },
   { action: 'memory.promote', title: 'Promote a memory to the vault', description: 'Write a stored memory into the Agents Vault as a Markdown note with frontmatter. Requires title (as the session index spells it) or memoryId; scope is optional and both stores are searched without it. The source memory entry is left unchanged; promoting the same memory again updates its note. The user reviews the note in the vault' },
   { action: 'memory.query', title: 'Search the semantic vault index', description: 'Semantic vector search across the Agents Vault and promoted notes. Requires query (text string); returns the top matching vault passages' },
+  { action: 'memory.guardrails', title: 'Check negative guardrails for Adobe/Web APIs', description: 'Surfaces crash traps, thread-locks and deprecated antipatterns before executing code' },
+  { action: 'memory.preflight', title: 'Preflight check code against known crash traps', description: 'Scans intended automation code for known crash hazards (e.g. missing executeAsModal)' },
 ]);
 
 export const OPENCHAMBER_MEMORY_ACTIONS = Object.freeze(
