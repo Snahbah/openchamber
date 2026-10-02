@@ -65,9 +65,11 @@ export const formatQuotaResetLabel = (
   }
 };
 
-/** "in 5h 19m" — the time-until-reset for a rolling window that resets today. */
+/** "in 2d 4h" / "in 5h 19m" — the time until a rolling window resets. */
 export const formatResetCountdown = (seconds: number): string => {
   const total = Math.max(0, Math.round(seconds));
+  const d = Math.floor(total / 86400);
+  if (d > 0) return `in ${d}d ${Math.floor((total % 86400) / 3600)}h`;
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;

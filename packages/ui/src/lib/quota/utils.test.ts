@@ -21,6 +21,7 @@ describe('quota utils', () => {
     expect(formatResetCountdown(4 * 3600 + 11 * 60)).toBe('in 4h 11m');
     expect(formatResetCountdown(90)).toBe('in 1m');
     expect(formatResetCountdown(30)).toBe('in 30s');
+    expect(formatResetCountdown(2 * 86400 + 4 * 3600 + 59 * 60)).toBe('in 2d 4h');
   });
 
   test('shows a countdown, not a bare clock time, for a reset later today', () => {

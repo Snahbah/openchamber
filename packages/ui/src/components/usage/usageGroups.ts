@@ -1,15 +1,49 @@
 import React from 'react';
 import { useI18n } from '@/lib/i18n';
-import { formatWindowLabel, QUOTA_PROVIDERS } from '@/lib/quota';
+import { formatQuotaResetLabel, formatQuotaValueLabel, formatWindowLabel, QUOTA_PROVIDERS } from '@/lib/quota';
+import { formatResetCountdown } from '@/lib/quota/utils';
 import { getDisplayModelName } from '@/lib/quota/model-families';
 import { useQuotaStore } from '@/stores/useQuotaStore';
-import type { QuotaProviderId, UsageWindow } from '@/types';
+import type { TimeFormatPreference } from '@/stores/useUIStore';
+import type { ProviderResult, QuotaProviderId, UsageWindow } from '@/types';
 
 export type UsageLimitRow = {
   key: string;
   label: string;
   subtitle?: string;
   window: UsageWindow;
+  /** Always shows the remaining percent and a time-until-reset, whatever the display mode. */
+  remainingWithCountdown?: boolean;
+};
+
+/**
+ * Agy (Antigravity) reports account pools, not per-model limits, so it is shown
+ * as exactly these two rows, weekly first. Model rows are never listed for it.
+ */
+const AGY_PROVIDER_ID: QuotaProviderId = 'google';
+const AGY_WINDOWS = [
+  { window: '7d', labelKey: 'quota.window.agy.weeklyRemaining' },
+  { window: '5h', labelKey: 'quota.window.agy.fiveHourRemaining' },
+] as const;
+
+export const formatUsageRowValue = (row: UsageLimitRow, displayMode: 'usage' | 'remaining'): string => {
+  const showRemaining = row.remainingWithCountdown || displayMode === 'remaining';
+  return formatQuotaValueLabel(
+    row.window.valueLabel,
+    showRemaining ? row.window.remainingPercent : row.window.usedPercent,
+  );
+};
+
+export const formatUsageRowReset = (row: UsageLimitRow, timeFormatPreference: TimeFormatPreference): string => {
+  const { resetAt } = row.window;
+  if (row.remainingWithCountdown && resetAt && resetAt > Date.now()) {
+    return formatResetCountdown((resetAt - Date.now()) / 1000);
+  }
+  return formatQuotaResetLabel(
+    resetAt,
+    row.window.resetAfterFormatted ?? row.window.resetAtFormatted,
+    timeFormatPreference,
+  );
 };
 
 export type UsageProviderGroup = {
@@ -19,6 +53,32 @@ export type UsageProviderGroup = {
   rows: UsageLimitRow[];
   /** Provider-level message: a fetch error, or "nothing reported". */
   status: string | null;
+};
+
+const buildProviderRows = (usage: ProviderResult['usage'] | undefined, selectedModels: string[]): UsageLimitRow[] => {
+  const rows: UsageLimitRow[] = [];
+
+  for (const [label, window] of Object.entries(usage?.windows ?? {})) {
+    rows.push({ key: `window-${label}`, label: formatWindowLabel(label), window });
+  }
+
+  const modelEntries = Object.entries(usage?.models ?? {});
+  const visibleModelEntries = selectedModels.length > 0
+    ? modelEntries.filter(([modelName]) => selectedModels.includes(modelName))
+    : modelEntries;
+  for (const [modelName, modelUsage] of visibleModelEntries) {
+    const entries = Object.entries(modelUsage.windows ?? {});
+    if (entries.length === 0) continue;
+    const [label, window] = entries[0];
+    rows.push({
+      key: `model-${modelName}-${label}`,
+      label: formatWindowLabel(label),
+      subtitle: getDisplayModelName(modelName),
+      window,
+    });
+  }
+
+  return rows;
 };
 
 /**
@@ -48,28 +108,14 @@ export const useUsageProviderGroups = (): UsageProviderGroup[] => {
       })
       .map((providerMeta) => {
         const result = resultsByProvider.get(providerMeta.id);
-        const rows: UsageLimitRow[] = [];
-
-        for (const [label, window] of Object.entries(result?.usage?.windows ?? {})) {
-          rows.push({ key: `window-${label}`, label: formatWindowLabel(label), window });
-        }
-
-        const modelEntries = Object.entries(result?.usage?.models ?? {});
-        const providerSelectedModels = selectedQuotaModels[providerMeta.id] ?? [];
-        const visibleModelEntries = providerSelectedModels.length > 0
-          ? modelEntries.filter(([modelName]) => providerSelectedModels.includes(modelName))
-          : modelEntries;
-        for (const [modelName, modelUsage] of visibleModelEntries) {
-          const entries = Object.entries(modelUsage.windows ?? {});
-          if (entries.length === 0) continue;
-          const [label, window] = entries[0];
-          rows.push({
-            key: `model-${modelName}-${label}`,
-            label: formatWindowLabel(label),
-            subtitle: getDisplayModelName(modelName),
-            window,
-          });
-        }
+        const rows: UsageLimitRow[] = providerMeta.id === AGY_PROVIDER_ID
+          ? AGY_WINDOWS.flatMap(({ window: label, labelKey }) => {
+            const window = result?.usage?.windows?.[label];
+            return window
+              ? [{ key: `window-${label}`, label: t(labelKey), window, remainingWithCountdown: true }]
+              : [];
+          })
+          : buildProviderRows(result?.usage, selectedQuotaModels[providerMeta.id] ?? []);
 
         const refreshError = refreshErrors[providerMeta.id];
         let status: string | null = null;

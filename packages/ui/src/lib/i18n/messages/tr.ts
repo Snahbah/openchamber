@@ -3233,6 +3233,8 @@ export const dict = {
   'quota.window.7d': '7 Günlük Limit',
   'quota.window.extraUsage': 'Ek Kullanım',
   'quota.window.weekly': 'Haftalık',
+  'quota.window.agy.weeklyRemaining': 'Kalan haftalık limit',
+  'quota.window.agy.fiveHourRemaining': 'Kalan beş saatlik limit',
   'quota.window.daily': 'Günlük',
   'quota.window.monthly': 'Aylık',
   'quota.window.credits': 'Kredi',

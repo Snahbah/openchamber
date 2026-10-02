@@ -3007,6 +3007,8 @@ export const dict = {
   'quota.window.7d': 'Limite sur 7 jours',
   'quota.window.extraUsage': 'Utilisation supplémentaire',
   'quota.window.weekly': 'Hebdomadaire',
+  'quota.window.agy.weeklyRemaining': 'Limite hebdomadaire restante',
+  'quota.window.agy.fiveHourRemaining': 'Limite de cinq heures restante',
   'quota.window.daily': 'Quotidien',
   'quota.window.monthly': 'Mensuel',
   'quota.window.credits': 'Crédits',

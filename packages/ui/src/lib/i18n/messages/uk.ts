@@ -3327,6 +3327,8 @@ export const dict: Record<I18nKey, string> = {
   "quota.window.7d": "7-Day Limit",
   "quota.window.extraUsage": "Додаткове використання",
   "quota.window.weekly": "Щотижня",
+  "quota.window.agy.weeklyRemaining": "Залишок тижневого ліміту",
+  "quota.window.agy.fiveHourRemaining": "Залишок пʼятигодинного ліміту",
   "quota.window.daily": "Daily",
   "quota.window.monthly": "Щомісяця",
   "quota.window.credits": "Credits",

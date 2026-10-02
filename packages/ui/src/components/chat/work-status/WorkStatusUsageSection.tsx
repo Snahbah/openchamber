@@ -5,10 +5,9 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { preloadProviderLogos } from '@/hooks/useProviderLogo';
-import { formatQuotaResetLabel, formatQuotaValueLabel } from '@/lib/quota';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { useUsageProviderGroups } from '@/components/usage/usageGroups';
+import { formatUsageRowReset, formatUsageRowValue, useUsageProviderGroups } from '@/components/usage/usageGroups';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { pickUsageHeadline } from './usageHeadline';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
@@ -81,12 +80,7 @@ export const WorkStatusUsageSection: React.FC = () => {
   // lands. With no match it falls back to the display-mode label rather than
   // showing some other provider's quota as if it were the active one.
   const headline = pickUsageHeadline(groups, currentProviderId);
-  const headlineMetric = headline
-    ? formatQuotaValueLabel(
-      headline.row.window.valueLabel,
-      displayMode === 'remaining' ? headline.row.window.remainingPercent : headline.row.window.usedPercent,
-    )
-    : null;
+  const headlineMetric = headline ? formatUsageRowValue(headline.row, displayMode) : null;
 
   return (
     <WorkStatusCollapsibleSection
@@ -127,15 +121,8 @@ export const WorkStatusUsageSection: React.FC = () => {
             ) : undefined}
           />
           {group.rows.map((row) => {
-            const displayPercent = displayMode === 'remaining'
-              ? row.window.remainingPercent
-              : row.window.usedPercent;
-            const metricLabel = formatQuotaValueLabel(row.window.valueLabel, displayPercent);
-            const resetLabel = formatQuotaResetLabel(
-              row.window.resetAt,
-              row.window.resetAfterFormatted ?? row.window.resetAtFormatted,
-              timeFormatPreference,
-            );
+            const metricLabel = formatUsageRowValue(row, displayMode);
+            const resetLabel = formatUsageRowReset(row, timeFormatPreference);
             return (
               <WorkStatusRow
                 key={`${group.providerId}-${row.key}`}

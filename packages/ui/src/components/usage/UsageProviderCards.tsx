@@ -1,10 +1,9 @@
 import React from 'react';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
-import { formatQuotaResetLabel, formatQuotaValueLabel } from '@/lib/quota';
 import { cn } from '@/lib/utils';
 import type { TimeFormatPreference } from '@/stores/useUIStore';
 import type { UsageWindow } from '@/types';
-import type { UsageProviderGroup } from './usageGroups';
+import { formatUsageRowReset, formatUsageRowValue, type UsageProviderGroup } from './usageGroups';
 
 const getWindowValueClass = (window: UsageWindow): string => {
   const usedPercent = window.usedPercent;
@@ -48,15 +47,8 @@ export const UsageProviderCards: React.FC<{
         {group.rows.length > 0 ? (
           <div className="mt-1.5 space-y-1">
             {group.rows.map((row) => {
-              const displayPercent = displayMode === 'remaining'
-                ? row.window.remainingPercent
-                : row.window.usedPercent;
-              const metricLabel = formatQuotaValueLabel(row.window.valueLabel, displayPercent);
-              const resetLabel = formatQuotaResetLabel(
-                row.window.resetAt,
-                row.window.resetAfterFormatted ?? row.window.resetAtFormatted,
-                timeFormatPreference,
-              );
+              const metricLabel = formatUsageRowValue(row, displayMode);
+              const resetLabel = formatUsageRowReset(row, timeFormatPreference);
               return (
                 <div key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
                   <span className="flex min-w-0 flex-1 items-baseline gap-1.5">

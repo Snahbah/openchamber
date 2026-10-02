@@ -3326,6 +3326,8 @@ export const dict: Record<I18nKey, string> = {
   'quota.window.7d': '7-Day Limit',
   'quota.window.extraUsage': '추가 사용량',
   'quota.window.weekly': '매주',
+  'quota.window.agy.weeklyRemaining': '주간 한도 잔여',
+  'quota.window.agy.fiveHourRemaining': '5시간 한도 잔여',
   'quota.window.daily': 'Daily',
   'quota.window.monthly': '매월',
   'quota.window.credits': 'Credits',
