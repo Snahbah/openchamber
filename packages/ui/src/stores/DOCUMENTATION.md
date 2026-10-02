@@ -445,6 +445,14 @@ Two rules follow from the routes:
   must send the full block it wants persisted; sending only the field it changed
   drops the rest.
 
+OpenCode's command list also interleaves each MCP server's prompts, named
+`<server>:<prompt>`. They are prompt templates with no editable command entry,
+and a command file name cannot contain a colon, so `useCommandsStore` drops
+every colon-named entry on load: the command menu, the composer's slash
+highlighting and the Commands settings page show real commands only. The
+dropped names are still resolvable — a typed `/server:prompt` goes through the
+live directory-scoped lookup in `session-ui-store`.
+
 Config reads also report `legacy: true` when the entity's file still uses v1
 spellings, and mutations answer with the `path` they wrote. The stores surface
 `legacy` and `path` on the entity so a page can show the quiet note; no file is

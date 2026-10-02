@@ -44,6 +44,17 @@ export interface Command extends CommandConfig {
 // Built-in commands provided by OpenCode (not defined in user config directories)
 const BUILTIN_COMMAND_NAMES = new Set(['init', 'review']);
 
+/**
+ * OpenCode interleaves an MCP server's prompts with its real commands, naming
+ * each `<server>:<prompt>` (e.g. `photoshop:inspect_document`). They are prompt
+ * templates the server advertises, not commands the composer runs, and a
+ * command file name cannot contain a colon — so the colon identifies them
+ * exactly. Dropping them here keeps the command menu, the composer's slash
+ * highlighting and the Commands settings list to real commands; a typed
+ * `/server:prompt` still resolves through the live lookup in session-ui-store.
+ */
+const isMcpPromptCommand = (name: string): boolean => name.includes(':');
+
 /** What `GET /api/config/commands/:name/config` answers. */
 export interface CommandEntityEnvelope {
   source: 'md' | 'json' | 'none';
@@ -310,9 +321,12 @@ export const useCommandsStore = create<CommandsStore>()(
                 const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
 
                 // Ensure the list is scoped to the same directory we use for config source detection.
-                // v2 keeps skills in their own catalog, so every command here is a real command file.
-                const commands = await readCommandMetadata(generation, (signal) => opencodeClient.listCommands(directory, signal));
+                // v2 keeps skills in their own catalog; what remains is command files plus the MCP
+                // prompts OpenCode enumerates under `<server>:<prompt>` names, which are not commands.
+                const discovered = await readCommandMetadata(generation, (signal) => opencodeClient.listCommands(directory, signal));
                 if (generation !== commandsGeneration) return false;
+
+                const commands = discovered.filter((cmd) => !isMcpPromptCommand(cmd.name));
 
                 const commandsWithScope = await Promise.all(
                   commands.map((cmd) => readCommandMetadata(generation, async (signal) => {

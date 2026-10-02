@@ -296,4 +296,16 @@ describe('useCommandsStore', () => {
     expect(useCommandsStore.getState().commands.map(c => c.name)).toEqual(['selected']);
   });
 
+  test('excludes MCP prompts, which OpenCode lists under <server>:<prompt> names', async () => {
+    listCommandsImpl = async () => [
+      { name: 'pr-review' },
+      { name: 'photoshop:inspect_document' },
+      { name: 'cinema4d:scene_survey' },
+    ];
+
+    expect(await useCommandsStore.getState().loadCommands()).toBe(true);
+    expect(selectCommandsForDirectory(useCommandsStore.getState(), activeProjectPath).map(c => c.name))
+      .toEqual(['pr-review']);
+  });
+
 });
