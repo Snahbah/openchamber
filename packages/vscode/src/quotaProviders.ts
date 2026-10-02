@@ -836,6 +836,11 @@ export const listConfiguredQuotaProviders = () => {
     configured.add('deepseek');
   }
 
+  const moonshotAuth = normalizeAuthEntry(getAuthEntry(auth, ['moonshotai']));
+  if (moonshotAuth && ((moonshotAuth as Record<string, unknown>).key || (moonshotAuth as Record<string, unknown>).token)) {
+    configured.add('moonshotai');
+  }
+
   if (getHyperApiKey(auth)) {
     configured.add('hyper');
   }
@@ -2951,6 +2956,80 @@ const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
   }
 };
 
+const MOONSHOT_BALANCE_URL = 'https://api.moonshot.ai/v1/users/me/balance';
+
+type MoonshotBalancePayload = {
+  data?: { available_balance?: number };
+};
+
+// Mirrors packages/web/server/lib/quota/providers/moonshotai.js.
+const fetchMoonshotaiQuota = async (): Promise<ProviderResult> => {
+  const providerId = 'moonshotai';
+  const providerName = 'Moonshot AI';
+  const auth = readAuthFile();
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['moonshotai'])) as Record<string, unknown> | null;
+  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+
+  if (!apiKey) {
+    return buildResult({ providerId, providerName, ok: false, configured: false, error: 'Not configured' });
+  }
+
+  const timeoutSignal = AbortSignal.timeout(15_000);
+
+  try {
+    const response = await fetch(MOONSHOT_BALANCE_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: timeoutSignal,
+    });
+
+    if (!response.ok) {
+      return buildResult({
+        providerId,
+        providerName,
+        ok: false,
+        configured: true,
+        error: response.status === 401 || response.status === 403
+          ? 'Session expired — please re-authenticate with Moonshot AI'
+          : `API error: ${response.status}`,
+      });
+    }
+
+    const payload = await response.json() as MoonshotBalancePayload;
+    const balance = payload?.data?.available_balance;
+    if (typeof balance !== 'number' || !Number.isFinite(balance)) {
+      return buildResult({ providerId, providerName, ok: false, configured: true, error: 'No quota data in response' });
+    }
+
+    const windows: Record<string, UsageWindow> = {
+      credits_balance: toUsageWindow({
+        usedPercent: null,
+        windowSeconds: null,
+        resetAt: null,
+        valueLabel: `$${formatMoney(balance)}`,
+      }),
+    };
+
+    return buildResult({ providerId, providerName, ok: true, configured: true, usage: { windows } });
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && (
+      error.name === 'TimeoutError' || (error.name === 'AbortError' && timeoutSignal.aborted)
+    );
+    const isParseError = error instanceof SyntaxError;
+    return buildResult({
+      providerId,
+      providerName,
+      ok: false,
+      configured: true,
+      error: isTimeout
+        ? 'Request timed out'
+        : isParseError
+          ? 'Invalid response from provider'
+          : (error instanceof Error ? error.message : 'Request failed'),
+    });
+  }
+};
+
 const HYPER_QUOTA_URL = 'https://hyper.charm.land/v1/credits';
 const HYPER_CREDIT_TO_USD = 0.05;
 
@@ -3179,6 +3258,8 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchClinePassQuota();
     case 'deepseek':
       return fetchDeepseekQuota();
+    case 'moonshotai':
+      return fetchMoonshotaiQuota();
     case 'hyper':
       return fetchHyperQuota();
     case 'neuralwatt':

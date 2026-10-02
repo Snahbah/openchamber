@@ -13,6 +13,7 @@ export const QUOTA_PROVIDERS: QuotaProviderMeta[] = [
   { id: 'github-copilot', name: 'GitHub Copilot' },
   { id: 'google', name: 'Agy' },
   { id: 'kimi-for-coding', name: 'Kimi for Coding' },
+  { id: 'moonshotai', name: 'Moonshot AI' },
   { id: 'nano-gpt', name: 'NanoGPT' },
   { id: 'openrouter', name: 'OpenRouter' },
   { id: 'zai-coding-plan', name: 'z.ai' },

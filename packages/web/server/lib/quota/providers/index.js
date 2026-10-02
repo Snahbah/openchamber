@@ -17,6 +17,7 @@ import * as exeDev from './exe-dev.js';
 import * as google from './google/index.js';
 import * as hyper from './hyper.js';
 import * as kimi from './kimi.js';
+import * as moonshotai from './moonshotai.js';
 import * as nanogpt from './nanogpt.js';
 import * as openai from './openai.js';
 import * as openrouter from './openrouter.js';
@@ -96,6 +97,12 @@ const registry = {
     providerName: kimi.providerName,
     isConfigured: kimi.isConfigured,
     fetchQuota: kimi.fetchQuota
+  },
+  moonshotai: {
+    providerId: moonshotai.providerId,
+    providerName: moonshotai.providerName,
+    isConfigured: moonshotai.isConfigured,
+    fetchQuota: moonshotai.fetchQuota
   },
   openrouter: {
     providerId: openrouter.providerId,

@@ -38,6 +38,7 @@ database first and the legacy file second (see the opencode module docs).
 | `github-copilot` | GitHub Copilot | `providers/copilot.js` | `github-copilot`, `copilot` |
 | `github-copilot-addon` | GitHub Copilot Add-on | `providers/copilot.js` | `github-copilot`, `copilot` |
 | `kimi-for-coding` | Kimi for Coding | `providers/kimi.js` | `kimi-for-coding`, `kimi` |
+| `moonshotai` | Moonshot AI | `providers/moonshotai.js` | `moonshotai` (API key under `key` or `token`) |
 | `nano-gpt` | NanoGPT | `providers/nanogpt.js` | `nano-gpt`, `nanogpt`, `nano_gpt` |
 | `openrouter` | OpenRouter | `providers/openrouter.js` | `openrouter` |
 | `zai-coding-plan` | z.ai | `providers/zai.js` | `zai-coding-plan`, `zai`, `z.ai` |
@@ -103,7 +104,10 @@ dispatch stability).
   requires a number plus two formatted strings, so emitting `null` in those positions is a
   validation failure rather than a missing bar.
 - **Gemini** accounts keep the model-level path (`retrieveUserQuota` buckets plus
-  `fetchAvailableModels`), which is the shape that source is known to serve.
+  `fetchAvailableModels`), which is the shape that source is known to serve. The shared UI
+  (`packages/ui/src/components/usage/usageGroups.ts`) never lists model rows for `google`: it
+  shows exactly two rows, weekly then five-hour, each pinned to the remaining percent with a
+  time-until-reset countdown regardless of the global used/remaining display mode.
 - Keep `packages/web/server/lib/quota/providers/google/` and
   `packages/vscode/src/quotaProviders.ts` in sync, as with the Claude, Kimi, Copilot, and
   OpenRouter providers.
@@ -144,6 +148,10 @@ saved list include ClinePass through the provider registry.
 `GET https://hyper.charm.land/v1/credits` returns a team's current Hypercredit balance, not a percentage or reset timestamp. The [Hyper FAQ](https://hyper.charm.land/faq) defines one Hypercredit as $0.05. Both runtimes expose `credits_balance` in dollars and `credits` as a numeric label under the UI's localized window title. Keep English unit text out of that numeric label.
 
 Web and VS Code accept finite numeric balances and non-empty numeric strings. Missing, blank, or malformed balances remain explicit failures; zero is valid. Credential lookup uses a non-empty string `key`, then `token`, so malformed or blank keys cannot mark the provider configured or hide a valid fallback token. Hyper fetchers accept `readAuth` and `fetchImpl` dependencies for tests without replacing filesystem or auth modules.
+
+## Moonshot AI balance semantics
+
+`moonshotai` is the pay-as-you-go Moonshot platform, separate from the Kimi for Coding subscription. `GET https://api.moonshot.ai/v1/users/me/balance` returns `data.available_balance` (cash plus vouchers) in USD, the remaining balance only, with no spent figure, so it is shown as a `credits_balance` window like DeepSeek. A zero balance is valid; a missing or non-numeric balance is a failed refresh. Keys from the China platform (`api.moonshot.cn`, CNY) are rejected by this endpoint and are not supported. Keep `providers/moonshotai.js` and `packages/vscode/src/quotaProviders.ts` (`fetchMoonshotaiQuota`) in sync.
 
 ## Kimi for Coding field semantics
 
