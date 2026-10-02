@@ -34,8 +34,8 @@ const heldPermissionSchema = z.object({ permissionId: z.string(), score: z.numbe
 
 const builtinCategorySchema = z.object({ id: z.string().min(1), name: z.string().min(1), description: z.string().min(1) });
 
-/** Which Jev endpoint the server is calling: the user's TypeSafe key, or the free model zen serves. */
-const jevSourceSchema = z.enum(['typesafe', 'zen-free']);
+/** Which Jev/Rev endpoint the server is calling: the user's TypeSafe key, local Rev, or the free model zen serves. */
+const jevSourceSchema = z.enum(['typesafe', 'zen-free', 'rev-local']);
 
 const stateSchema = z.object({
   available: z.boolean(),

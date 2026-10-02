@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRoutingRuntime, requestTextOf } from './runtime.js';
 import { resolveEffectiveConfig } from './store.js';
 import { excerptHead, excerptHeadTail, turnsToHistory } from './history.js';
-import { createJevClient, decidePermission, decideRouting } from './jev.js';
+import { createJevClient, decidePermission, decideRouting, evaluateRevSafety } from './jev.js';
 
 const AUTO = { providerID: 'openchamber', id: 'auto' };
 const FALLBACK = { model: { providerID: 'anthropic', modelID: 'claude-sonnet-5' }, variant: 'medium' };
@@ -18,7 +18,7 @@ const readyConfig = () => {
   return config;
 };
 
-const makeRuntime = ({ config = readyConfig(), token = 'key', answers, askError } = {}) => {
+const makeRuntime = ({ config = readyConfig(), token = 'key', answers, askError, revUrl = null } = {}) => {
   const events = [];
   const store = {
     readConfig: vi.fn(async () => config),
@@ -34,6 +34,7 @@ const makeRuntime = ({ config = readyConfig(), token = 'key', answers, askError 
     getOpenCodeAuthHeaders: () => ({}),
     broadcastGlobalUiEvent: (event) => events.push(event),
     store,
+    revUrl,
     jev,
   });
   return { runtime, store, jev, events };
@@ -135,28 +136,69 @@ describe('resolveAutoSelection', () => {
 });
 
 describe('jev endpoint', () => {
-  const capture = async (token) => {
+  const capture = async (token, options) => {
     let call = null;
     const fetchImpl = async (url, init) => {
       call = { url, init };
       return { ok: true, status: 200, text: async () => JSON.stringify({ answers: {} }) };
     };
-    await createJevClient({ fetchImpl }).ask({ state: 'x', questions: {} }, token);
+    await createJevClient({ fetchImpl, ...options }).ask({ state: 'x', questions: {} }, token);
     return { url: call.url, headers: call.init.headers, body: JSON.parse(call.init.body) };
   };
 
-  it('sends a saved key to TypeSafe and falls back to the free model zen serves without one', async () => {
+  it('sends a saved key to TypeSafe and falls back to local Rev or free zen without one', async () => {
     const keyed = await capture('secret');
     expect(keyed.url).toBe('https://api.typesafe.ai/v1/systemone');
     expect(keyed.headers.authorization).toBe('Bearer secret');
     expect(keyed.body.model).toBe('jev-latest');
 
-    const free = await capture(null);
+    const free = await capture(null, { revUrl: null });
     expect(free.url).toBe('https://opencode.ai/zen/v1/systemone');
     expect(free.headers.authorization).toBeUndefined();
     // Zen counts our calls by this header, and does not know the `jev-latest` alias.
     expect(free.headers['x-opencode-client']).toBe('openchamber');
     expect(free.body.model).toBe('jev-1.13-free');
+  });
+
+  it('routes to local Rev daemon for pre-turn classification', async () => {
+    let revCall = null;
+    const fetchImpl = async (url, init) => {
+      revCall = { url, init };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          complexity: 'trivial_syntax',
+          assignedTier: 'standard_coder',
+          degraded: false,
+        }),
+      };
+    };
+    const client = createJevClient({ fetchImpl, revUrl: 'http://127.0.0.1:3840' });
+    const result = await client.ask({
+      state: { request: 'fix typo' },
+      questions: { category: { criteria: { trivial: 'desc', implement: 'desc' } } },
+    }, null);
+
+    expect(revCall.url).toBe('http://127.0.0.1:3840/hook/pre-turn');
+    expect(JSON.parse(revCall.init.body).prompt).toBe('fix typo');
+    expect(result.answers.category).toEqual({ choice: 'trivial', confidence: 0.95 });
+  });
+
+  it('evaluates Rev safety net deterministically for risky actions', async () => {
+    const client = createJevClient({ revUrl: 'http://127.0.0.1:3840' });
+    const risky = await client.ask({
+      state: { permission: { type: 'bash', patterns: ['git push --force origin main'] } },
+      questions: { ask: {} },
+    }, null);
+    expect(risky.answers.ask.noul).toBeGreaterThanOrEqual(0.6);
+    expect(risky.answers.kind.choice).toBe('git_history');
+
+    const safe = await client.ask({
+      state: { permission: { type: 'edit', patterns: ['src/index.ts'] } },
+      questions: { ask: {} },
+    }, null);
+    expect(safe.answers.ask.noul).toBeLessThan(0.6);
   });
 });
 
@@ -203,8 +245,10 @@ describe('evaluatePermission', () => {
 describe('describe', () => {
   it('reports Auto ready with an enabled config, a fallback and two categories, key or no key', async () => {
     expect((await makeRuntime({ answers: {} }).runtime.describe())).toMatchObject({ autoReady: true, tokenPresent: true, jevSource: 'typesafe' });
-    // Without a key the free Jev model on zen answers, so Auto stays available.
-    expect((await makeRuntime({ token: null, answers: {} }).runtime.describe())).toMatchObject({ autoReady: true, tokenPresent: false, jevSource: 'zen-free' });
+    // Without a key and with local Rev, rev-local answers.
+    expect((await makeRuntime({ token: null, answers: {}, revUrl: 'http://127.0.0.1:3840' }).runtime.describe())).toMatchObject({ autoReady: true, tokenPresent: false, jevSource: 'rev-local' });
+    // Without Rev and without a key the free Jev model on zen answers, so Auto stays available.
+    expect((await makeRuntime({ token: null, answers: {}, revUrl: null }).runtime.describe())).toMatchObject({ autoReady: true, tokenPresent: false, jevSource: 'zen-free' });
     const one = readyConfig();
     one.categories = one.categories.map((c, i) => ({ ...c, enabled: i === 0 }));
     expect((await makeRuntime({ config: one, answers: {} }).runtime.describe()).autoReady).toBe(false);

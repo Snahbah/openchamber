@@ -371,7 +371,9 @@ export const RoutingPage: React.FC = () => {
             <div className={SETTINGS_FIELDS_STACK_CLASS}>
               <p className={SETTINGS_HELPER_CLASS}>{t('settings.routing.access.intro')}</p>
               <p className={SETTINGS_HELPER_CLASS}>
-                {jevSource === 'typesafe' ? t('settings.routing.access.usingKey') : (
+                {jevSource === 'typesafe' ? t('settings.routing.access.usingKey') : jevSource === 'rev-local' ? (
+                  <strong className="font-semibold">{t('settings.routing.access.usingRev')}</strong>
+                ) : (
                   <>
                     <strong className="font-semibold">{t('settings.routing.access.usingFree')}</strong>{' '}
                     {t('settings.routing.access.usingFreeDetails')}

@@ -13,7 +13,7 @@
  */
 import { OpenCode } from '@opencode/client';
 import { z } from 'zod';
-import { AUTO_MODEL_REF, BUILTIN_CATEGORIES, isAutoModel } from './defaults.js';
+import { AUTO_MODEL_REF, BUILTIN_CATEGORIES, REV_API_URL, isAutoModel } from './defaults.js';
 import { createRoutingStore, parseEffectiveConfig } from './store.js';
 import { buildPermissionRequest, buildRoutingRequest, createJevClient, decidePermission, decideRouting, jevEndpoint } from './jev.js';
 import { loadRoutingHistory } from './history.js';
@@ -58,7 +58,8 @@ export function createRoutingRuntime({
   broadcastGlobalUiEvent,
   fetchImpl = fetch,
   store = createRoutingStore({ dataDir }),
-  jev = createJevClient({ fetchImpl }),
+  revUrl = REV_API_URL,
+  jev = createJevClient({ fetchImpl, revUrl }),
   now = Date.now,
 }) {
   const permissionDecisions = new Map();
@@ -85,13 +86,13 @@ export function createRoutingRuntime({
   const describe = async () => {
     const [config, token] = await Promise.all([store.readConfig(), store.readToken()]);
     const tokenPresent = Boolean(token);
-    // A key is not a precondition: without one Jev answers through the free
-    // model zen serves, so Auto only needs a fallback and two categories.
+    // A key is not a precondition: without one Jev answers through local Rev or
+    // the free model zen serves, so Auto only needs a fallback and two categories.
     const autoReady = config.enabled && Boolean(config.fallback) && enabledCategories(config).length >= 2;
     // Built-in text travels with the config so "Reset" in Settings restores the shipped wording.
     // `available` stays in the payload for the client: a runtime without an
     // OpenChamber server (VS Code) answers 404 and reads it as false.
-    return { available: true, autoReady, tokenPresent, jevSource: jevEndpoint(token).source, config, builtins: BUILTIN_CATEGORIES };
+    return { available: true, autoReady, tokenPresent, jevSource: jevEndpoint(token, { revUrl }).source, config, builtins: BUILTIN_CATEGORIES };
   };
 
   const publishUpdated = async () => {

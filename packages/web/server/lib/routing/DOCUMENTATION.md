@@ -72,17 +72,21 @@ Auto. There is no env gate — the feature shipped dark behind
   which the URL alone answers; every other send, and anything that is not JSON,
   reaches the proxy as the stream it arrived as.
 
-## Where a Jev request goes
+## Where a Jev / Rev request goes
 
 A saved TypeSafe key wins — the user pasted it and it carries their own quota —
-and the request goes to `api.typesafe.ai/v1/systemone` as `jev-latest`. Without
-a key the same body goes to `opencode.ai/zen/v1/systemone` as `jev-1.13-free`,
-which OpenCode Zen answers with no credential at all, tagged
-`x-opencode-client: openchamber`. Dax approved this use in Slack on 2026-09-22
-on terms the code and the copy keep together: zen can identify and throttle our
-calls through that header, and Settings → Routing tells the user in plain words
-that the free model is a limited-time OpenCode promotion that will later need a
-key. Zen rejects the `jev-latest` alias, so the versioned free id is sent.
+and the request goes to `api.typesafe.ai/v1/systemone` as `jev-latest` (`typesafe`).
+Without a key, OpenChamber prefers the local sovereign Rev daemon (`REV_API_URL`,
+default `http://127.0.0.1:3840` as `rev-local`), which evaluates pre-turn routing
+via `/hook/pre-turn` and permission safety deterministically without external cloud
+quotas. If Rev is not configured or disabled, the same body goes to
+`opencode.ai/zen/v1/systemone` as `jev-1.13-free` (`zen-free`), which OpenCode Zen
+answers with no credential at all, tagged `x-opencode-client: openchamber`. Dax
+approved this use in Slack on 2026-09-22 on terms the code and the copy keep
+together: zen can identify and throttle our calls through that header, and
+Settings → Routing tells the user in plain words that the free model is a
+limited-time OpenCode promotion that will later need a key. Zen rejects the
+`jev-latest` alias, so the versioned free id is sent.
 
 Never make the free tier the only path: the zen docs call it "available for a
 limited time", and the key field is what users fall back to when it ends.

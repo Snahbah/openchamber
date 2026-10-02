@@ -41,6 +41,13 @@ export const ZEN_JEV_API_URL = 'https://opencode.ai/zen/v1/systemone';
 export const ZEN_JEV_MODEL = 'jev-1.13-free';
 export const ZEN_CLIENT_ID = 'openchamber';
 
+/**
+ * Local sovereign decision daemon (Rev). Replaces cloud routing/safety with
+ * the operator's own local daemon running on http://127.0.0.1:3840.
+ */
+export const REV_API_URL = process.env.REV_API_URL || 'http://127.0.0.1:3840';
+export const REV_MODEL = 'rev';
+
 /** Per-attempt timeout; the lab measured 250–700 ms warm, ~1 s on a cold TLS handshake. */
 export const JEV_TIMEOUT_MS = 4000;
 

@@ -7,6 +7,8 @@ import {
   JEV_API_URL,
   JEV_MODEL,
   JEV_TIMEOUT_MS,
+  REV_API_URL,
+  REV_MODEL,
   ROUTING_INSTRUCTIONS,
   SAFETY_INSTRUCTIONS,
   SAFETY_KINDS,
@@ -17,12 +19,20 @@ import {
 
 /**
  * Where one request goes. A saved TypeSafe key wins: the user chose it and it
- * carries their own quota. Without one, the same questions go to the free Jev
- * model OpenCode Zen serves without a credential, identified as OpenChamber.
+ * carries their own quota. Without one, OpenChamber prefers the local sovereign
+ * Rev daemon (REV_API_URL, default http://127.0.0.1:3840). If Rev is disabled,
+ * the same questions go to the free Jev model OpenCode Zen serves without a
+ * credential, identified as OpenChamber.
  */
-export const jevEndpoint = (token) => (token
-  ? { url: JEV_API_URL, model: JEV_MODEL, headers: { authorization: `Bearer ${token}` }, source: 'typesafe' }
-  : { url: ZEN_JEV_API_URL, model: ZEN_JEV_MODEL, headers: { 'x-opencode-client': ZEN_CLIENT_ID }, source: 'zen-free' });
+export const jevEndpoint = (token, { revUrl = REV_API_URL } = {}) => {
+  if (token) {
+    return { url: JEV_API_URL, model: JEV_MODEL, headers: { authorization: `Bearer ${token}` }, source: 'typesafe' };
+  }
+  if (revUrl) {
+    return { url: revUrl, model: REV_MODEL, headers: {}, source: 'rev-local' };
+  }
+  return { url: ZEN_JEV_API_URL, model: ZEN_JEV_MODEL, headers: { 'x-opencode-client': ZEN_CLIENT_ID }, source: 'zen-free' };
+};
 
 export const buildRoutingRequest = ({ categories, history, request }) => {
   const criteria = {};
@@ -77,14 +87,132 @@ export const decidePermission = (answers, { threshold }) => {
 
 const responseSchema = z.object({ answers: z.record(z.string(), z.unknown()) });
 
-export const createJevClient = ({ fetchImpl = fetch, timeoutMs = JEV_TIMEOUT_MS } = {}) => ({
+/**
+ * Deterministic permission safety evaluation for the local Rev sovereign plane.
+ * Judges whether an action should hold for user confirmation or proceed.
+ */
+export const evaluateRevSafety = (type, command = '') => {
+  const cmd = command.toLowerCase().trim();
+
+  // Git destructive actions
+  if (
+    /\bgit\s+(?:push\s+.*(?:--force|-f\b|\+)|reset\s+--hard|clean\s+-[a-z]*f|branch\s+-[a-z]*d|rebase\s+-i)/i.test(cmd)
+  ) {
+    return { score: 0.95, kind: 'git_history' };
+  }
+
+  // Deleting broad data
+  if (
+    /\b(?:rm\s+-[a-z]*r[a-z]*f|rmdir\s+\/s|del\s+\/f\s+\/s|drop\s+(?:table|database)|truncate\s+table)/i.test(cmd)
+  ) {
+    return { score: 0.95, kind: 'deletes_data' };
+  }
+
+  // System level changes
+  if (
+    /\b(?:sudo|apt|apt-get|brew|yum|dnf|pacman|choco)\s+(?:install|remove|uninstall|upgrade)/i.test(cmd) ||
+    /\b(?:npm|pnpm|yarn)\s+(?:install\s+-g|add\s+-g|global\s+add)/i.test(cmd) ||
+    /(?:(?:\/etc|\/usr|\/var|~?\/\.ssh|~?\/\.gnupg|~?\/\.bashrc|~?\/\.zshrc)(?:\/|\b))/i.test(cmd)
+  ) {
+    return { score: 0.9, kind: 'system_change' };
+  }
+
+  // External network mutations
+  if (/\bcurl\s+.*-[xX]\s*(?:post|put|delete|patch)\b/i.test(cmd)) {
+    return { score: 0.85, kind: 'external_side_effect' };
+  }
+
+  // Routine safe development actions: reading, local edits, tests, standard git commands
+  if (type === 'edit') {
+    return { score: 0.2, kind: 'writes_project' };
+  }
+
+  return { score: 0.1, kind: 'read_only' };
+};
+
+export const askRev = async ({ endpoint, request, fetchImpl, signal, started }) => {
+  // 1. Routing classification request
+  if (request.questions?.category) {
+    const preTurnPayload = {
+      sessionId: request.state?.sessionId || '00000000-0000-0000-0000-000000000000',
+      prompt: (request.state?.request ?? '').trim(),
+      activeModelId: 'qwen2.5-coder-32b',
+      activeTier: 'standard_coder',
+      registeredTools: ['read_file', 'write_file', 'bash', 'edit'],
+    };
+
+    const response = await fetchImpl(`${endpoint.url}/hook/pre-turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(preTurnPayload),
+      signal,
+    });
+
+    if (!response.ok) {
+      throw Object.assign(new Error(`Rev responded ${response.status}`), { status: response.status });
+    }
+
+    const data = await response.json();
+    const complexityToCategory = {
+      trivial_syntax: 'trivial',
+      standard_feature: 'implement',
+      complex_refactor: 'hard',
+      architectural_plan: 'hard',
+    };
+    let choice = complexityToCategory[data?.complexity] ?? 'implement';
+    const criteria = request.questions.category.criteria ?? {};
+    if (criteria[data?.complexity]) {
+      choice = data.complexity;
+    } else if (!criteria[choice]) {
+      const keys = Object.keys(criteria);
+      if (keys.length > 0 && !keys.includes(choice)) {
+        choice = keys[0];
+      }
+    }
+    const confidence = data?.degraded ? 0.5 : 0.95;
+    return {
+      answers: {
+        category: { choice, confidence },
+      },
+      ms: Date.now() - started,
+    };
+  }
+
+  // 2. Permission safety evaluation
+  if (request.questions?.ask) {
+    const perm = request.state?.permission ?? {};
+    const metadataCommand = z.string().safeParse(perm.metadata?.command);
+    const command = metadataCommand.success
+      ? metadataCommand.data
+      : Array.isArray(perm.patterns)
+        ? perm.patterns.join(' ')
+        : '';
+
+    const evaluation = evaluateRevSafety(perm.type, command);
+    return {
+      answers: {
+        ask: { noul: evaluation.score },
+        kind: { choice: evaluation.kind },
+      },
+      ms: Date.now() - started,
+    };
+  }
+
+  throw new Error('Rev received an unrecognised question type');
+};
+
+export const createJevClient = ({ fetchImpl = fetch, timeoutMs = JEV_TIMEOUT_MS, revUrl = REV_API_URL } = {}) => ({
   /** Resolves to the parsed answers; throws with `status` on an HTTP error and `code: 'timeout'` on abort. */
   ask: async (request, token) => {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), timeoutMs);
     const started = Date.now();
+    let endpoint = null;
     try {
-      const endpoint = jevEndpoint(token);
+      endpoint = jevEndpoint(token, { revUrl });
+      if (endpoint.source === 'rev-local') {
+        return await askRev({ endpoint, request, fetchImpl, signal: abort.signal, started });
+      }
       const response = await fetchImpl(endpoint.url, {
         method: 'POST',
         headers: { ...endpoint.headers, 'content-type': 'application/json' },
@@ -99,7 +227,10 @@ export const createJevClient = ({ fetchImpl = fetch, timeoutMs = JEV_TIMEOUT_MS 
       if (!body.success) throw new Error('Jev response has no answers');
       return { answers: body.data.answers, ms: Date.now() - started };
     } catch (error) {
-      if (error?.name === 'AbortError') throw Object.assign(new Error(`Jev timed out after ${timeoutMs}ms`), { code: 'timeout' });
+      if (error?.name === 'AbortError') {
+        const label = endpoint?.source === 'rev-local' ? 'Rev' : 'Jev';
+        throw Object.assign(new Error(`${label} timed out after ${timeoutMs}ms`), { code: 'timeout' });
+      }
       throw error;
     } finally {
       clearTimeout(timer);
