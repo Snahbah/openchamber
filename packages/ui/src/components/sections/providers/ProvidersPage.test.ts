@@ -240,7 +240,7 @@ describe('getProviderCardStatus', () => {
   });
 
   test('a connection OpenCode flagged for a new sign-in outranks every other status', () => {
-    const expired: ConnectionInfo = { ...second, status: { status: 'needs_auth', message: 'Signed out of OpenCode Console.' } };
+    const expired = { ...second, status: { status: 'needs_auth', message: 'Signed out of OpenCode Console.' } } as ConnectionInfo;
     expect(status([integration({ connections: [credential, expired] })])).toEqual({ kind: 'reauthNeeded' });
   });
 

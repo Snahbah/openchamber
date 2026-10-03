@@ -3,9 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { CredentialEntry } from '@opencode/client';
-
 import { configureOpenCodeCredentials } from './opencodeAuth';
+
+/** The credential entry shape the auth store accepts; `@opencode/client` no
+ * longer exports this type. */
+type CredentialEntry = {
+  id: string;
+  integrationID: string;
+  label: string;
+  active: boolean;
+  value:
+    | { type: 'key'; key: string }
+    | { type: 'oauth'; methodID: string; access: string; refresh: string; expires: number };
+};
 
 const previousQuotaDataDirectory = process.env.OPENCHAMBER_DATA_DIR;
 const temporaryQuotaDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-quota-'));

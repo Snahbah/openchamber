@@ -39,13 +39,22 @@ export function summarizeOpenCodeError(error: StructuredError | null | undefined
   return { name, message: message ? message.slice(0, MAX_MESSAGE_LENGTH) : null }
 }
 
+/** OpenCode's newer binary attaches a raw `response.body` to a structured error
+ * that the pinned `@opencode/client` types do not declare yet. Read through this
+ * narrow view so the UI compiles against 2.0.22 while surfacing the body when
+ * the running binary provides it. */
+export type StructuredErrorWithResponse = StructuredError & { response?: { body?: string } };
+
+export const errorResponseBody = (error: StructuredError | null | undefined): string | undefined =>
+  (error as StructuredErrorWithResponse | null | undefined)?.response?.body;
+
 /**
  * The provider's raw response body behind the error (OpenCode 2.0.20+), for
  * the details a person can expand under the notice. Kept out of the
  * diagnostics records: a body may echo request content.
  */
 export function responseBodyOf(error: StructuredError | null | undefined): string | null {
-  const body = error?.response?.body.trim()
+  const body = errorResponseBody(error)?.trim()
   return body ? body.slice(0, MAX_RESPONSE_BODY_LENGTH) : null
 }
 

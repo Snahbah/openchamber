@@ -919,7 +919,6 @@ export const listConfiguredQuotaProviders = async () => {
   if (deepinfraAuth && ((deepinfraAuth as Record<string, unknown>).key || (deepinfraAuth as Record<string, unknown>).token)) {
     configured.add('deepinfra');
   }
-  }
 
   if (getHyperApiKey(auth)) {
     configured.add('hyper');
@@ -3314,7 +3313,7 @@ type MoonshotBalancePayload = {
 const fetchMoonshotaiQuota = async (): Promise<ProviderResult> => {
   const providerId = 'moonshotai';
   const providerName = 'Moonshot AI';
-  const auth = readAuthFile();
+  const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['moonshotai'])) as Record<string, unknown> | null;
   const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
 

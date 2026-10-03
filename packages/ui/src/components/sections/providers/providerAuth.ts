@@ -111,6 +111,16 @@ export const providerHasCredentials = (input: ProviderCredentialInput): boolean 
   return typeof input.optionsApiKey === 'string' && input.optionsApiKey.trim().length > 0;
 };
 
+/** OpenCode's newer binary attaches a runtime `status` to a live connection
+ * (`needs_auth`, with `message` and an optional `url`) that the pinned
+ * `@opencode/client` types do not declare yet. Read through this narrow view so
+ * the UI compiles against 2.0.22 while surfacing the fields when the running
+ * binary provides them. */
+type ConnectionWithRuntimeStatus = ConnectionInfo & { status?: { status?: string; message?: string; url?: string } };
+
+export const connectionStatus = (connection: ConnectionInfo): { status?: string; message?: string; url?: string } | undefined =>
+  (connection as ConnectionWithRuntimeStatus).status;
+
 /**
  * A problem OpenCode reported for a live connection (2.0.20+): `needs_auth`
  * asks the user to sign in again, at `url` when one is given, otherwise by
@@ -118,7 +128,7 @@ export const providerHasCredentials = (input: ProviderCredentialInput): boolean 
  * itself once the connection works again.
  */
 export const connectionNeedsAuth = (connection: ConnectionInfo): boolean =>
-  connection.status?.status === 'needs_auth';
+  connectionStatus(connection)?.status === 'needs_auth';
 
 export type ProviderCardStatus =
   | { kind: 'reauthNeeded' }

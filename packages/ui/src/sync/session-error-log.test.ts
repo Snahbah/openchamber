@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { getRecentSessionErrors, recordSessionError, responseBodyOf, summarizeOpenCodeError } from './session-error-log';
+import { getRecentSessionErrors, recordSessionError, responseBodyOf, summarizeOpenCodeError, type StructuredErrorWithResponse } from './session-error-log';
+
+const errorWithBody = (body: string): StructuredErrorWithResponse => ({ type: 'provider.api', message: 'Bad request', response: { body } });
 
 describe('summarizeOpenCodeError', () => {
   test('reads the structured error: type plus message', () => {
@@ -21,13 +23,13 @@ describe('summarizeOpenCodeError', () => {
 
 describe('responseBodyOf', () => {
   test('returns the provider body OpenCode attached, trimmed and bounded', () => {
-    expect(responseBodyOf({ type: 'provider.api', message: 'Bad request', response: { body: ' {"error":"x"} ' } })).toBe('{"error":"x"}');
-    expect(responseBodyOf({ type: 'provider.api', message: 'Bad request', response: { body: 'y'.repeat(20_000) } })?.length).toBe(16_000);
+    expect(responseBodyOf(errorWithBody(' {"error":"x"} '))).toBe('{"error":"x"}');
+    expect(responseBodyOf(errorWithBody('y'.repeat(20_000)))?.length).toBe(16_000);
   });
 
   test('is null without a body', () => {
     expect(responseBodyOf({ type: 'provider.api', message: 'Bad request' })).toBeNull();
-    expect(responseBodyOf({ type: 'provider.api', message: 'Bad request', response: { body: '  ' } })).toBeNull();
+    expect(responseBodyOf(errorWithBody('  '))).toBeNull();
     expect(responseBodyOf(null)).toBeNull();
   });
 });

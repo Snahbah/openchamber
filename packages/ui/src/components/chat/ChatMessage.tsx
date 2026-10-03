@@ -9,6 +9,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useContextStore } from '@/stores/contextStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
+import { errorResponseBody } from '@/sync/session-error-log';
 import { useDeviceInfo } from '@/lib/device';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { cn } from '@/lib/utils';
@@ -602,7 +603,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const assistantErrorText = assistantError?.text;
     // The provider's raw response behind the error, offered as expandable details.
     const assistantErrorResponseBody = assistantErrorText && message.info.role === 'assistant'
-        ? message.info.error?.response?.body.trim() || undefined
+        ? errorResponseBody(message.info.error)?.trim() || undefined
         : undefined;
 
     const messageTextContent = React.useMemo(() => {

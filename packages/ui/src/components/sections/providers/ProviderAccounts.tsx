@@ -14,7 +14,7 @@ import type { IconName } from '@/components/icon/icons';
 import { useI18n } from '@/lib/i18n';
 import { openExternalUrl } from '@/lib/url';
 import { cn } from '@/lib/utils';
-import { connectionNeedsAuth, type CredentialConnection } from './providerAuth';
+import { connectionNeedsAuth, connectionStatus, type CredentialConnection } from './providerAuth';
 
 interface ProviderAccountsProps {
   /** Stored credentials first, then environment variables the server can see. */
@@ -43,18 +43,19 @@ const AccountTile: React.FC<{ icon: IconName }> = ({ icon }) => (
  * The line under an account: what OpenCode reported when the connection needs
  * a new sign-in, otherwise how the account connects.
  */
-const AccountSubtitle: React.FC<{ connection: ConnectionInfo; fallback: string }> = ({ connection, fallback }) => (
-  connectionNeedsAuth(connection) && connection.status ? (
-    <div className="typography-micro text-[var(--status-warning)] break-words">{connection.status.message}</div>
+const AccountSubtitle: React.FC<{ connection: ConnectionInfo; fallback: string }> = ({ connection, fallback }) => {
+  const status = connectionStatus(connection);
+  return status?.status === 'needs_auth' ? (
+    <div className="typography-micro text-[var(--status-warning)] break-words">{status.message}</div>
   ) : (
     <div className="typography-micro text-muted-foreground">{fallback}</div>
-  )
-);
+  );
+};
 
 /** Opens the page OpenCode named for signing in again (an SSO login, for one). */
 const SignInAgainButton: React.FC<{ connection: ConnectionInfo; account: string }> = ({ connection, account }) => {
   const { t } = useI18n();
-  const url = connectionNeedsAuth(connection) ? connection.status?.url : undefined;
+  const url = connectionNeedsAuth(connection) ? connectionStatus(connection)?.url : undefined;
   if (!url) return null;
   return (
     <Button
