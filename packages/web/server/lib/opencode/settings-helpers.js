@@ -406,7 +406,7 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.largeTextPasteBehavior === 'string') {
       const mode = candidate.largeTextPasteBehavior.trim();
-      if (mode === 'ask' || mode === 'attach' || mode === 'inline') {
+      if (mode === 'ask' || mode === 'attach' || mode === 'inline' || mode === 'inline-double-paste') {
         result.largeTextPasteBehavior = mode;
       }
     }

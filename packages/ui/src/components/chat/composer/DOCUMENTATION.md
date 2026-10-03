@@ -145,7 +145,7 @@ does not hide its entry actions behind the chat header.
 | `ui/` | Presentation. `ComposerAttachmentControls` lists files, GitHub (issues and PRs in one picker), Linear, then guests with `contributes.attach`; each source is one row. The GitHub and Linear picker is `components/references/` (see its `DOCUMENTATION.md`). `"panel"` opens the rail. `"dialog"` opens `GuestAttachDialog` with that guest iframe and `ready.surface: "dialog"` (loading `attachEntry` when the manifest declared one). `host.attach` writes the composer chip. Clicking that chip reopens the guest with the chip as `ready.item`: dialog guests get it as a prop, panel guests through `lib/guests/item-store.ts` and the rail. Message and session actions (`contributes.actions`) travel the same two roads with a `GuestMessageItem` / `GuestSessionItem` (`lib/guests/dialog-store.ts` `openGuestWithItem`); the dialog they open lives in `layout/GuestHosts.tsx`, not here, and an `attach` from it closes it through `handleGuestAttach`. The chip keeps the guest's opaque `data` (also on the `guest-issue` / `guest-pr` context part metadata and the session `LinkedGuestIssue` snapshot) so it comes back byte-identical; it is never part of the context text. VS Code and mobile skip that list. |
 | `parallel/` | "Run in parallel": the launch state of a new-session draft (prompt variants, models per variant, worktrees, setup, auto-fusion) and the strip that renders it above the editor |
 | `text.ts` | How inserted text meets the text already there |
-| `largeTextPaste.ts` | Detect large plain-text pastes and build virtual `.txt` files |
+| `largeTextPaste.ts` | Detect large plain-text pastes, own the double-paste gesture, and build virtual `.txt` files |
 | `largeTextPasteOffer.ts` | Ask-toast offer id begin/resolve (supersede + double-apply guards) |
 
 `ChatInput.handlePaste` owns paste orchestration: URL-over-selection markdown
@@ -155,12 +155,23 @@ as `[name]`; images get a generated unique name first, other files keep their
 own name and are cited only after they attached. A copied file's filename text
 is suppressed so only the citation lands in the draft.
 Large pastes (about 2,000 characters or 25 lines) follow the composer setting
-`largeTextPasteBehavior` (`ask` / `attach` / `inline`). Attaching creates an
+`largeTextPasteBehavior` (`ask` / `attach` / `inline` / `inline-double-paste`). Attaching creates an
 in-memory `text/plain` file named `pasted-context-N.txt`, inserts a bracket
 citation, and sends it through the same attachment pipeline as a manually
 picked `.txt` file. Ask-toast actions read live composer/attachment state so
 typing or other attaches between paste and choice stay consistent. Short text,
 images, and URL wraps keep their existing paths.
+In `inline-double-paste`, the first paste uses CodeMirror's native paste path.
+Two distinct Ctrl/Cmd+V pastes with identical clipboard text, less than 1000 ms
+apart, convert only the first inserted range into a file and citation. The
+gesture records CodeMirror's normalized insertion, not the raw clipboard length.
+Key repeat, other non-modifier keys, edits, selection movement, blur, draft/mode/setting or
+runtime changes, and unmount invalidate it. Menu and touch pastes stay inline.
+One candidate expires after 1000 ms; no timer delays insertion. Conversion keeps
+the inline text until attachment succeeds and rechecks the live document,
+selection and draft scope before replacement. Failed attachments keep the text.
+If editing invalidates a conversion already attaching, its accepted file remains
+in the source draft but the newer text is never replaced.
 On mobile, choosing either ask-toast action restores editor focus, expanding
 the collapsed pill if needed. Hosted mobile focuses inside the tap; Capacitor
 uses the shell's existing next-frame keyboard timing when the pill expands.

@@ -288,6 +288,10 @@ const LARGE_TEXT_PASTE_BEHAVIOR_OPTIONS: Option<LargeTextPasteBehavior>[] = [
         id: 'inline',
         labelKey: 'settings.openchamber.visual.option.largeTextPaste.inline.label',
     },
+    {
+        id: 'inline-double-paste',
+        labelKey: 'settings.openchamber.visual.option.largeTextPaste.inlineDoublePaste.label',
+    },
 ];
 
 const INPUT_HISTORY_SCOPE_OPTIONS: Option<InputHistoryScope>[] = [

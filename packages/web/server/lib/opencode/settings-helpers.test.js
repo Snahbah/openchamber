@@ -876,6 +876,11 @@ describe('settings registry gate', () => {
 
   it('accepts the newly shared profile fields', () => {
     const helpers = createTestHelpersWithRealSanitizers();
+    for (const mode of ['ask', 'attach', 'inline', 'inline-double-paste']) {
+      const accepted = helpers.sanitizeSettingsUpdate({ largeTextPasteBehavior: mode });
+      expect(accepted).toEqual({ largeTextPasteBehavior: mode });
+      expect(helpers.formatSettingsResponse(helpers.mergePersistedSettings({}, accepted))).toMatchObject({ largeTextPasteBehavior: mode });
+    }
     expect(helpers.sanitizeSettingsUpdate({
       providerOrder: ['b', 'a', 'a'],
       diffWrapLines: true,

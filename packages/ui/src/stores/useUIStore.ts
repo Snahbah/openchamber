@@ -41,13 +41,13 @@ export type WeekStartPreference = 'auto' | 'sunday' | 'monday';
 export type DesktopWindowControlsPosition = 'left' | 'right';
 export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 export type FileEditorKeymap = 'default' | 'vim';
-export type LargeTextPasteBehavior = 'ask' | 'attach' | 'inline';
+export type LargeTextPasteBehavior = 'ask' | 'attach' | 'inline' | 'inline-double-paste';
 export type SessionGoalChecker = 'classifier' | 'small-model';
 
 export const DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR: LargeTextPasteBehavior = 'ask';
 
 export const normalizeLargeTextPasteBehavior = (value: unknown): LargeTextPasteBehavior => {
-  if (value === 'attach' || value === 'inline' || value === 'ask') {
+  if (value === 'attach' || value === 'inline' || value === 'ask' || value === 'inline-double-paste') {
     return value;
   }
   return DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR;

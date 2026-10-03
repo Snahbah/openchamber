@@ -185,7 +185,7 @@ const parseDraftStarters: SettingsParser<DraftStarterRef[]> = mapParser(fromSche
 // Unknown ids are dropped rather than kept: they would hide nothing and
 // accumulate forever as sections get renamed.
 const parseWorkStatusHiddenSections: SettingsParser<string[]> = mapParser(fromSchema(z.array(z.unknown())), (value) => sanitizeWorkStatusHiddenSections(value));
-const parseLargeTextPasteBehavior: SettingsParser<LargeTextPasteBehavior> = parseOneOf(['ask', 'attach', 'inline']);
+const parseLargeTextPasteBehavior: SettingsParser<LargeTextPasteBehavior> = parseOneOf(['ask', 'attach', 'inline', 'inline-double-paste']);
 const parseFileEditorKeymap: SettingsParser<FileEditorKeymap> = parseOneOf(['default', 'vim']);
 
 /**

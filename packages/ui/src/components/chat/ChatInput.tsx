@@ -29,7 +29,7 @@ import { getInlineCommentDraftKey, useInlineCommentDraftStore, type InlineCommen
 import { useSnippetsStore } from '@/stores/useSnippetsStore';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { startReviewFlow } from '@/lib/reviewFlow';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getRuntimeKey, subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import {
     createChatDraftIdentity,
@@ -128,6 +128,8 @@ import {
 import {
     createPastedContextFile,
     isLargePlainTextPaste,
+    LargeTextPasteGesture,
+    type LargeTextPasteCandidate,
 } from './composer/largeTextPaste';
 import {
     LARGE_TEXT_PASTE_TOAST_CLASSNAME,
@@ -410,6 +412,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const pendingPastedAttachmentFilenamesRef = React.useRef<Set<string>>(new Set());
     const largeTextPasteToastIdRef = React.useRef<string | number | null>(null);
     const largeTextPasteOfferIdRef = React.useRef(0);
+    const [largeTextPasteGesture] = React.useState(() => new LargeTextPasteGesture());
 
     // TODO: port sendMessage to session-actions (complex — creates sessions, handles attachments, etc.)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -568,6 +571,30 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const persistChatDraft = useUIStore((state) => state.persistChatDraft);
     const inputSpellcheckEnabled = useUIStore((state) => state.inputSpellcheckEnabled);
     const largeTextPasteBehavior = useUIStore((state) => state.largeTextPasteBehavior);
+    const largeTextPasteScope = JSON.stringify([
+        activeRuntimeKey, chatDraftIdentity ? getChatDraftIdentityKey(chatDraftIdentity) : null,
+        inputMode, largeTextPasteBehavior,
+    ]);
+    const largeTextPasteScopeRef = React.useRef(largeTextPasteScope);
+    React.useLayoutEffect(() => {
+        largeTextPasteScopeRef.current = largeTextPasteScope;
+        largeTextPasteGesture.invalidate();
+        return () => largeTextPasteGesture.invalidate();
+    }, [largeTextPasteGesture, largeTextPasteScope]);
+    React.useEffect(() => subscribeRuntimeEndpointWillChange(() => largeTextPasteGesture.invalidate()), [largeTextPasteGesture]);
+
+    const getLargeTextPasteScope = React.useCallback(() => (
+        JSON.stringify([getRuntimeKey(), largeTextPasteScopeRef.current, useInputStore.getState().attachmentDraftKey])
+    ), []);
+
+    const readLargeTextPasteSnapshot = React.useCallback(() => {
+        const editor = composerRef.current;
+        if (!editor) return null;
+        return {
+            value: editor.getValue(), selection: editor.getSelection(),
+            scope: getLargeTextPasteScope(),
+        };
+    }, [getLargeTextPasteScope]);
     const persistedExpandedInput = useUIStore((state) => state.isExpandedInput);
     const isExpandedInput = !isBtwActive && persistedExpandedInput;
     const setExpandedInput = useUIStore((state) => state.setExpandedInput);
@@ -1191,6 +1218,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         return { id, path };
     }, [parallelProject]);
     const enterParallel = parallel.enter;
+    React.useLayoutEffect(() => {
+        largeTextPasteGesture.invalidate();
+    }, [largeTextPasteGesture, parallel.state?.active, parallel.isActive, newSessionDraftOpen, newSessionDraft?.target, mobileComposerExpanded, isExpandedInput]);
     const handleRunInParallel = React.useCallback(() => {
         // The picker offers it everywhere; a run always starts from a new-session draft.
         if (newSessionDraftOpen && newSessionDraft?.target !== 'chat') enterParallel();
@@ -2202,7 +2232,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
         // Early return during IME composition to prevent interference with autocomplete.
         // Uses keyCode === 229 fallback for WebKit where compositionend fires before keydown.
-        if (isIMECompositionEvent(e)) return;
+        if (isIMECompositionEvent(e)) {
+            largeTextPasteGesture.invalidate();
+            return;
+        }
+        if (largeTextPasteBehavior === 'inline-double-paste') largeTextPasteGesture.keyDown(e);
 
         // Enter shell mode before CodeMirror inserts the trigger. Keeping the
         // document unchanged also keeps the caret at the start for the first
@@ -2498,6 +2532,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     }, []);
 
     const handleComposerChange = ({ value, selection, fromPaste, insertedText }: ComposerChange) => {
+        if (largeTextPasteBehavior === 'inline-double-paste') {
+            largeTextPasteGesture.change({
+                value, selection, fromPaste, insertedText,
+                scope: getLargeTextPasteScope(),
+            });
+        }
         if (shellTriggerNormalizationRef.current) {
             shellTriggerNormalizationRef.current = false;
             setMessage(value);
@@ -2649,6 +2689,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                     setMessage(next);
                     composerRef.current?.setSelection(caret, caret);
                     updateAutocompleteState(next, caret, getFileMentionInputSourceForInsertedText(url), url);
+                    largeTextPasteGesture.invalidate();
                     return;
                 }
             }
@@ -2676,6 +2717,16 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         const pastedText = e.clipboardData.getData('text');
         const sessionReady = Boolean(currentSessionId || newSessionDraftOpen);
 
+        let conversion: LargeTextPasteCandidate | null = null;
+        if (largeTextPasteBehavior === 'inline-double-paste') {
+            const snapshot = readLargeTextPasteSnapshot();
+            if (snapshot && sessionReady && inputMode === 'normal' && imageFiles.length === 0 && otherFiles.length === 0) {
+                conversion = largeTextPasteGesture.beginPaste(pastedText, snapshot);
+            } else {
+                largeTextPasteGesture.invalidate();
+            }
+        }
+
         if (imageFiles.length === 0 && otherFiles.length > 0) {
             // A copied file also carries its name as text; keep it out of the draft.
             e.preventDefault();
@@ -2689,6 +2740,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             const shouldOfferLargePaste = sessionReady
                 && inputMode === 'normal'
                 && behavior !== 'inline'
+                && (behavior !== 'inline-double-paste' || conversion !== null)
                 && isLargePlainTextPaste(pastedText);
 
             if (!shouldOfferLargePaste) {
@@ -2711,7 +2763,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 );
             };
 
-            const attachAsFile = async () => {
+            const attachAsFile = async (candidate: LargeTextPasteCandidate | null = null) => {
                 // Read live attachment + composer state at action time — the ask
                 // toast can outlive the paste while the user types or attaches more.
                 const liveAttachedFiles = useInputStore.getState().attachedFiles;
@@ -2726,19 +2778,35 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 const selectionEnd = editor?.getSelection().end ?? currentMessage.length;
                 const insertionText = withInlineInsertionBoundaries(
                     citationText,
-                    currentMessage.slice(0, selectionStart),
-                    currentMessage.slice(selectionEnd),
+                    currentMessage.slice(0, candidate?.from ?? selectionStart),
+                    currentMessage.slice(candidate?.to ?? selectionEnd),
                 );
 
-                insertTextAtSelection(
-                    insertionText,
-                    getFileMentionInputSourceForInsertedText(insertionText),
-                );
+                if (!candidate) {
+                    insertTextAtSelection(
+                        insertionText,
+                        getFileMentionInputSourceForInsertedText(insertionText),
+                    );
+                }
 
                 const file = createPastedContextFile(pastedText, filename);
                 pendingPastedAttachmentFilenamesRef.current.add(filename);
                 try {
-                    await addAttachedFile(file);
+                    if (candidate) {
+                        await largeTextPasteGesture.convert(
+                            candidate, async () => {
+                                const accepted = await addAttachedFile(file);
+                                if (!accepted && readLargeTextPasteSnapshot()?.scope === candidate.scope) {
+                                    toast.error(t('chat.chatInput.toast.clipboardTextAttachFailed'));
+                                }
+                                return accepted;
+                            }, readLargeTextPasteSnapshot,
+                            (from, to, citation) => composerRef.current?.replaceRange(from, to, citation),
+                            insertionText,
+                        );
+                    } else {
+                        await addAttachedFile(file);
+                    }
                 } catch (error) {
                     console.error('Clipboard text attach failed', error);
                     toast.error(
@@ -2750,6 +2818,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                     pendingPastedAttachmentFilenamesRef.current.delete(filename);
                 }
             };
+
+            if (conversion) {
+                await attachAsFile(conversion);
+                return;
+            }
 
             if (behavior === 'attach') {
                 await attachAsFile();
@@ -2829,7 +2902,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
 
         e.preventDefault();
         await attachFilesWithCitation([...imageFiles, ...otherFiles], pastedText);
-    }, [addAttachedFile, attachFilesWithCitation, currentSessionId, inputMode, isMobile, largeTextPasteBehavior, markFileMentionPasteSuppression, message, mobileShell, newSessionDraftOpen, insertTextAtSelection, setMessage, t, updateAutocompleteState]);
+    }, [addAttachedFile, attachFilesWithCitation, currentSessionId, inputMode, isMobile, largeTextPasteBehavior, largeTextPasteGesture, readLargeTextPasteSnapshot, markFileMentionPasteSuppression, message, mobileShell, newSessionDraftOpen, insertTextAtSelection, setMessage, t, updateAutocompleteState]);
 
     const handleFileSelect = (file: { name: string; path: string; relativePath?: string }) => {
 
@@ -3681,6 +3754,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         <form
             ref={composerFormRef}
             data-btw-composer={isBtwActive ? 'true' : undefined}
+            onContextMenuCapture={() => largeTextPasteGesture.invalidate()}
             onKeyDownCapture={(event) => {
                 if (!isBtwActive || event.key !== 'Escape' || isIMECompositionEvent(event) || hasOpenDropdown()) return;
                 if (!(event.target instanceof Element) || !event.target.closest('[data-chat-input-footer]')) return;
@@ -3961,12 +4035,17 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                                     return event.defaultPrevented;
                                 }}
                                 onPaste={handlePaste}
+                                onKeyUp={(event) => largeTextPasteGesture.keyUp(event)}
                                 onSelectionChange={(selection) => {
+                                    largeTextPasteGesture.invalidate();
                                     cursorPosRef.current = selection.start;
                                     updateAutocompleteOverlayPosition();
                                 }}
                                 onFocus={mobileShell.onEditorFocus}
-                                onBlur={mobileShell.onEditorBlur}
+                                onBlur={() => {
+                                    largeTextPasteGesture.invalidate();
+                                    mobileShell.onEditorBlur();
+                                }}
                                 placeholder={isBtwActive
                                     ? t('chat.btw.mainComposerPlaceholder')
                                     : currentSessionId || newSessionDraftOpen

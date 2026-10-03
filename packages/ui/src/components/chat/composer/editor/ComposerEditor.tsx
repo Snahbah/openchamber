@@ -87,6 +87,7 @@ export interface ComposerEditorProps {
      * message history and send.
      */
     onKeyDown?: (event: KeyboardEvent) => boolean;
+    onKeyUp?: (event: KeyboardEvent) => void;
     onFocus?: () => void;
     onBlur?: () => void;
     onPaste?: (event: ClipboardEvent) => void;
@@ -302,6 +303,7 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                             }
                         }),
                         EditorView.domEventHandlers({
+                            keyup: (event) => { handlersRef.current.onKeyUp?.(event); return false; },
                             focus: () => { handlersRef.current.onFocus?.(); return false; },
                             blur: () => { handlersRef.current.onBlur?.(); return false; },
                             paste: (event) => { handlersRef.current.onPaste?.(event); return false; },

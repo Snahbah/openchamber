@@ -19,6 +19,14 @@ const runtimeCtx = {
 };
 
 describe('settings search', () => {
+  test('finds double-paste on every shared Settings surface', () => {
+    for (const query of ['double paste', 'ctrl v', 'cmd v']) {
+      for (const context of [runtimeCtx, { ...runtimeCtx, isDesktop: true }, { ...runtimeCtx, isVSCode: true }, { ...runtimeCtx, isMobile: true }]) {
+        const results = buildSettingsSearchResults({ query, runtimeCtx: context, t, getPageTitle: (page) => page });
+        expect(results.find((result) => result.id === 'chat.large-text-paste')?.page).toBe('chat');
+      }
+    }
+  });
   test('finds the Claude Code integration by name and package, never in VS Code', () => {
     for (const query of ['claude', '@openchamber/opencode-claude']) {
       for (const isVSCode of [false, true]) {
