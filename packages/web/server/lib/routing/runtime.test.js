@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRoutingRuntime, requestTextOf } from './runtime.js';
 import { resolveEffectiveConfig } from './store.js';
 import { excerptHead, excerptHeadTail, turnsToHistory } from './history.js';
-import { createJevClient, decidePermission, decideRouting, evaluateRevSafety } from './jev.js';
+import { askRev, buildRoutingRequest, createJevClient, decidePermission, decideRouting, evaluateRevSafety } from './jev.js';
 
 const AUTO = { providerID: 'openchamber', id: 'auto' };
 const FALLBACK = { model: { providerID: 'anthropic', modelID: 'claude-sonnet-5' }, variant: 'medium' };
@@ -81,6 +81,58 @@ describe('decisions', () => {
     expect(decidePermission({ ask: { noul: 0.61 }, kind: { choice: 'git_history' } }, { threshold: 0.6 })).toEqual({ hold: true, score: 0.61, kind: 'git_history' });
     expect(decidePermission({ ask: { noul: 0.2 }, kind: { choice: 'read_only' } }, { threshold: 0.6 }).hold).toBe(false);
     expect(() => decidePermission({}, { threshold: 0.6 })).toThrow(/ask score/);
+  });
+});
+
+describe('askRev', () => {
+  const revResponse = ({ complexity = 'trivial_syntax', retainActiveModel = false, allowedTools = [], degraded = false } = {}) =>
+    async (url, init) => ({ ok: true, status: 200, json: async () => ({ complexity, retainActiveModel, allowedTools, degraded }) });
+  const req = (over = {}) => ({ state: { sessionId: 's1', request: 'fix', activeModel: null, ...over }, questions: { category: { criteria: {} } } });
+
+  it('surfaces retainActiveModel and allowedTools from the Rev decision', async () => {
+    const out = await askRev({
+      endpoint: { url: 'http://rev' },
+      request: req({ activeModel: { id: 'nemotron-3-super', providerID: 'local' } }),
+      fetchImpl: revResponse({ complexity: 'complex_refactor', retainActiveModel: true, allowedTools: ['read'] }),
+      signal: new AbortController().signal,
+      started: 0,
+    });
+    expect(out.retainActiveModel).toBe(true);
+    expect(out.allowedTools).toEqual(['read']);
+  });
+
+  it('sends the real session model id, not a hardcoded one', async () => {
+    let body = null;
+    await askRev({
+      endpoint: { url: 'http://rev' },
+      request: req({ activeModel: { id: 'nemotron-3-super', providerID: 'local' } }),
+      fetchImpl: async (url, init) => { body = JSON.parse(init.body); return { ok: true, status: 200, json: async () => ({ complexity: 'trivial_syntax', retainActiveModel: false, allowedTools: [], degraded: false }) }; },
+      signal: new AbortController().signal,
+      started: 0,
+    });
+    expect(body.activeModelId).toBe('local/nemotron-3-super');
+  });
+
+  it('falls back to a placeholder id when no session model is available', async () => {
+    let body = null;
+    await askRev({
+      endpoint: { url: 'http://rev' },
+      request: req(),
+      fetchImpl: async (url, init) => { body = JSON.parse(init.body); return { ok: true, status: 200, json: async () => ({ complexity: 'trivial_syntax', retainActiveModel: false, allowedTools: [], degraded: false }) }; },
+      signal: new AbortController().signal,
+      started: 0,
+    });
+    expect(body.activeModelId).toBe('qwen2.5-coder-32b');
+  });
+});
+
+describe('buildRoutingRequest', () => {
+  it('carries the session model so Rev measures KV affinity against it', () => {
+    const out = buildRoutingRequest({ categories: [], history: [], request: 'fix', activeModel: { id: 'nemotron-3-super', providerID: 'local', variant: null } });
+    expect(out.state.activeModel).toEqual({ id: 'nemotron-3-super', providerID: 'local', variant: null });
+  });
+  it('leaves activeModel null when not given, so callers route on the request alone', () => {
+    expect(buildRoutingRequest({ categories: [], history: [], request: 'fix' }).state.activeModel).toBeNull();
   });
 });
 

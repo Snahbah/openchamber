@@ -34,11 +34,11 @@ export const jevEndpoint = (token, { revUrl = REV_API_URL } = {}) => {
   return { url: ZEN_JEV_API_URL, model: ZEN_JEV_MODEL, headers: { 'x-opencode-client': ZEN_CLIENT_ID }, source: 'zen-free' };
 };
 
-export const buildRoutingRequest = ({ categories, history, request }) => {
+export const buildRoutingRequest = ({ categories, history, request, activeModel = null }) => {
   const criteria = {};
   for (const category of categories) criteria[category.id] = category.description;
   return {
-    state: { history, request },
+    state: { history, request, activeModel },
     questions: { category: { type: 'choice', instructions: ROUTING_INSTRUCTIONS, criteria } },
   };
 };
@@ -133,10 +133,15 @@ export const evaluateRevSafety = (type, command = '') => {
 export const askRev = async ({ endpoint, request, fetchImpl, signal, started }) => {
   // 1. Routing classification request
   if (request.questions?.category) {
+    // The session's current model is the resident model Rev's KV affinity is
+    // measured against. Feeding the real one (not a hardcoded id) is what makes
+    // `retainActiveModel` a decision about this session rather than a guess.
+    const activeModel = request.state?.activeModel ?? null;
+    const activeModelId = activeModel ? `${activeModel.providerID}/${activeModel.id}` : 'qwen2.5-coder-32b';
     const preTurnPayload = {
       sessionId: request.state?.sessionId || '00000000-0000-0000-0000-000000000000',
       prompt: (request.state?.request ?? '').trim(),
-      activeModelId: 'qwen2.5-coder-32b',
+      activeModelId,
       activeTier: 'standard_coder',
       registeredTools: ['read_file', 'write_file', 'bash', 'edit'],
     };
@@ -174,6 +179,10 @@ export const askRev = async ({ endpoint, request, fetchImpl, signal, started }) 
       answers: {
         category: { choice, confidence },
       },
+      // Surfaced to the caller so a non-escalating turn keeps the resident
+      // model instead of re-switching it (KV-cache affinity, Rev PRD-01 4.1.2).
+      retainActiveModel: data?.retainActiveModel === true,
+      allowedTools: Array.isArray(data?.allowedTools) ? data.allowedTools : null,
       ms: Date.now() - started,
     };
   }

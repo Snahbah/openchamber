@@ -166,16 +166,36 @@ export function createRoutingRuntime({
       } catch (error) {
         console.warn('[routing] history unavailable, routing on the request alone:', errorMessage(error));
       }
+      // The session's current model is the resident model Rev's KV affinity is
+      // measured against. Reading it is best-effort: without it Rev routes on
+      // the request alone, exactly as it did before.
+      let activeModel = null;
+      try {
+        const info = await openCodeClient(directory).session.get({ sessionID: sessionId });
+        activeModel = info?.model ?? null;
+      } catch (error) {
+        console.warn('[routing] session model unavailable, routing on the request alone:', errorMessage(error));
+      }
       try {
         const token = await store.readToken();
         const request = (requestText ?? '').trim();
-        const { answers, ms } = await jev.ask(buildRoutingRequest({ categories: enabledCategories(config), history, request }), token);
+        const { answers, retainActiveModel, ms } = await jev.ask(buildRoutingRequest({ categories: enabledCategories(config), history, request, activeModel }), token);
         const result = decideRouting(answers.category, { categories: enabledCategories(config), minConfidence: config.minConfidence });
         decision.category = result.category?.id ?? null;
         decision.confidence = result.confidence;
         decision.reason = result.reason;
         decision.ms = ms;
-        selection = chooseSelection(config, result.category, agent);
+        // KV-cache affinity: when Rev says the resident model can handle the
+        // turn, keep it instead of switching onto the category's model.
+        if (retainActiveModel && activeModel) {
+          selection = {
+            model: { providerID: activeModel.providerID, id: activeModel.id, variant: activeModel.variant ?? null },
+            agent: null,
+            decision: { providerID: activeModel.providerID, modelID: activeModel.id, variant: activeModel.variant ?? null, agent: null, retained: true },
+          };
+        } else {
+          selection = chooseSelection(config, result.category, agent);
+        }
       } catch (error) {
         decision.reason = 'error';
         decision.error = errorMessage(error);
