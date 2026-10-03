@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { z } from "zod"
+import { isAmbiguousSendFailure } from '@/sync/send-failure-classification'
 
 // The generated `@opencode/client` runs for real here; only the runtime
 // transport (`runtimeFetch`) and runtime identity are replaced. That keeps
@@ -23,7 +25,7 @@ const json = (value: unknown, status = 200) =>
 const noContent = () => new Response(null, { status: 204 })
 
 const runtimeFetchMock = mock<RuntimeFetch>(async (input, init) => {
-  const url = input instanceof URL ? input : new URL(typeof input === "string" ? input : input.url)
+  const url = input instanceof URL ? input : new URL(typeof input === "string" ? input : input.url, "http://runtime.test")
   const request: CapturedRequest = {
     url,
     method: String(init?.method ?? "GET").toUpperCase(),
@@ -100,7 +102,75 @@ beforeEach(() => {
   opencodeClient.clearConfigCache()
 })
 
+describe('runtime routing responses', () => {
+  const routingFailureSchema = z.object({ message: z.string(), status: z.number() })
+  const html = () => new Response('<!doctype html><title>OpenChamber</title>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+  const rejectedMessage = async (params: Parameters<typeof opencodeClient.sendMessage>[0]) => {
+    try {
+      await opencodeClient.sendMessage(params)
+    } catch (error) {
+      return { error, data: routingFailureSchema.parse(error) }
+    }
+    throw new Error('Expected the prompt to be rejected')
+  }
+
+  test('rejects an HTML prompt acknowledgement as a definite failure', async () => {
+    responses.push(html())
+    const error = await rejectedMessage({ id: 'ses_1', providerID: 'routing-html', text: 'hello' })
+    expect(error.error).toBeInstanceOf(OpencodeApiError)
+    expect(error.data.message).toContain('returned a web page instead of an API response')
+    expect(error.data.status).toBe(200)
+    expect(isAmbiguousSendFailure(error.error)).toBe(false)
+  })
+
+  test('rejects an HTML slash-command acknowledgement', async () => {
+    responses.push(html())
+    await expect(opencodeClient.sendCommand({ id: 'ses_1', command: 'review' })).rejects.toThrow('returned a web page instead of an API response')
+  })
+
+  test('does not cache an HTML configuration response', async () => {
+    responses.push(html())
+    await expect(opencodeClient.getConfig('/repo/html')).rejects.toThrow('returned a web page instead of an API response')
+    responses.push(json([]))
+    expect(await opencodeClient.getConfig('/repo/html')).toEqual({})
+    expect(requests).toHaveLength(2)
+  })
+
+  test('a packaged routing 503 is definite and never trips the provider circuit', async () => {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      responses.push(new Response('{"error":{"code":"runtime_unavailable"}}', {
+        status: 503, headers: { 'content-type': 'application/json', 'x-openchamber-error': 'runtime-unavailable' },
+      }))
+      const error = await rejectedMessage({ id: 'ses_1', providerID: 'routing-unavailable', text: 'hello' })
+      expect(error.data.message).toContain('runtime_unavailable')
+      expect(error.data.status).toBe(503)
+      expect(isAmbiguousSendFailure(error.error)).toBe(false)
+    }
+    responses.push(json({ data: { id: 'msg_accepted' } }))
+    expect(await opencodeClient.sendMessage({ id: 'ses_1', providerID: 'routing-unavailable', text: 'hello', messageId: 'msg_accepted' })).toBe('msg_accepted')
+    expect(requests).toHaveLength(7)
+  })
+})
+
 describe("request fidelity", () => {
+  test("project creation uses the OpenChamber directory route", async () => {
+    responses.push(json({ success: true, restarted: false, path: "/repo/new" }))
+    expect(await opencodeClient.createDirectory("/repo/new", { asProject: true }))
+      .toEqual({ success: true, path: "/repo/new" })
+    expect(requests[0].url.pathname).toBe("/api/openchamber/directory")
+    expect(requests[0].method).toBe("POST")
+    expect(requests[0].body).toEqual({ path: "/repo/new", create: true })
+  })
+
+  test("project activation uses the OpenChamber directory route without creation", async () => {
+    const result = { success: true, restarted: false, path: "/repo/existing" }
+    responses.push(json(result))
+    expect(await opencodeClient.setOpenCodeWorkingDirectory("/repo/existing")).toEqual(result)
+    expect(requests[0].url.pathname).toBe("/api/openchamber/directory")
+    expect(requests[0].method).toBe("POST")
+    expect(requests[0].body).toEqual({ path: "/repo/existing" })
+  })
+
   test("a directory-scoped call carries the encoded directory header and lists that directory", async () => {
     responses.push(json({ data: [sessionInfo], cursor: { next: "c2" } }))
     const page = await opencodeClient.listSessionsPage({ directory: "/repo/app dir" })
@@ -119,6 +189,31 @@ describe("request fidelity", () => {
     await opencodeClient.listSessionsPage({ global: true })
     expect(requests[0].url.searchParams.has("directory")).toBe(false)
     expect(requests[0].headers.has("x-opencode-directory")).toBe(false)
+  })
+
+  test("the active-session snapshot is the host's, except for a directory inside an isolated space", async () => {
+    responses.push(json({ data: { ses_host: { type: "running" } } }))
+    await opencodeClient.getActiveSessionStatuses("/repo/app")
+    expect(requests[0].url.pathname).toBe("/api/session/active")
+    expect(requests[0].headers.has("x-opencode-directory")).toBe(false)
+    responses.push(json({ data: { ses_space: { type: "running" } } }))
+    const statuses = await opencodeClient.getActiveSessionStatuses("/spaces/a1b2c3d4e5f6/app")
+    // The space's directory travels on the request; `runtimeFetch` turns it into the space's prefix.
+    expect(requests[1].url.pathname).toBe("/api/session/active")
+    expect(requests[1].headers.get("x-opencode-directory")).toBe(encodeURIComponent("/spaces/a1b2c3d4e5f6/app"))
+    expect(statuses).toEqual({ ses_space: { type: "busy" } })
+  })
+
+  test("a global page carries the isolated-space marks the host merged in, a directory page never does", async () => {
+    const spaces = [{ id: "a1b2c3d4e5f6", name: "One", state: "stale", sessions: 1, projectDirectory: "/repo/app", directory: "/spaces/a1b2c3d4e5f6/app" }]
+    responses.push(json({ data: [], cursor: {}, spaces }))
+    const page = await opencodeClient.listSessionsPage({ global: true })
+    expect(page.spaces).toEqual([{ id: "a1b2c3d4e5f6", name: "One", state: "stale", projectDirectory: "/repo/app", directory: "/spaces/a1b2c3d4e5f6/app" }])
+    responses.push(json({ data: [], cursor: {}, spaces }))
+    expect((await opencodeClient.listSessionsPage({ directory: "/repo/app" })).spaces).toBeUndefined()
+    // A mark the client cannot read is no mark, not a broken list.
+    responses.push(json({ data: [], cursor: {}, spaces: [{ id: "bad" }] }))
+    expect((await opencodeClient.listSessionsPage({ global: true })).spaces).toBeUndefined()
   })
 test('Windows drive roots remain absolute in directory selection and SDK client identity', () => {
   const previous = opencodeClient.getDirectory();
@@ -255,6 +350,21 @@ describe("sendMessage", () => {
       agents: [{ name: "explore", mention: { start: 0, end: 8, text: "@explore" } }],
     })
     expect(requests.every((r) => r.headers.get("x-opencode-directory") === encodeURIComponent("/repo/app"))).toBe(true)
+  })
+
+  test("context ids travel with the synthetic messages and sort below the prompt id", async () => {
+    responses.push(json({ id: "a" }), json({ id: "b" }), json({ id: "c" }))
+    const id = await opencodeClient.sendMessage({
+      id: "ses_1",
+      providerID: "openai",
+      text: "",
+      context: [{ id: "msg_given", text: "first" }, { text: "second" }],
+    })
+    const [first, second] = requests.slice(0, 2).map((request) => request.body)
+    expect(first).toMatchObject({ id: "msg_given", text: "first" })
+    expect(second).toMatchObject({ text: "second" })
+    const mintedID = z.object({ id: z.string().startsWith("msg_") }).parse(second).id
+    expect(mintedID < id).toBe(true)
   })
 
   test("without a selection change only the prompt is sent, with files as URIs", async () => {
@@ -564,6 +674,87 @@ describe("messages and config", () => {
     expect(catalog.providers).toEqual([{ id: "openai", name: "OpenAI" }])
     expect(catalog.models).toHaveLength(1)
     expect(catalog.default).toEqual({ id: "x", providerID: "openai" })
+  })
+
+  for (const { label, variants } of [
+    { label: "missing", variants: undefined },
+    { label: "null", variants: null },
+    { label: "keyed object", variants: { default: {} } },
+  ]) {
+    test(`a live model catalog with ${label} variants can be read by the chat renderer`, async () => {
+      const model = { id: "opencode-go/glm-5.3-flash", modelID: "glm-5.3-flash", providerID: "opencode-go", variants }
+      const answer = (request: CapturedRequest) =>
+        request.url.pathname === "/api/provider"
+          ? json({ location: {}, data: [{ id: "opencode-go", name: "OpenCode Go" }] })
+          : request.url.pathname === "/api/model"
+            ? json({ location: {}, data: [model] })
+            : json({ location: {}, data: model })
+      responses.push(answer, answer, answer)
+
+      const catalog = await opencodeClient.getProvidersForConfig("/repo/app")
+      expect(catalog.models[0]?.variants.map((variant: { id: string }) => variant.id) ?? []).toEqual([])
+      expect(catalog.models[0]).toEqual({ ...model, variants: [] })
+    })
+  }
+
+  test("a live model catalog keeps variant ids and settings from valid arrays", async () => {
+    const variants = [{ id: "high", settings: { reasoningEffort: "high" } }, { id: "low", settings: {} }]
+    const model = { id: "opencode-go/glm-5.3-flash", modelID: "glm-5.3-flash", providerID: "opencode-go", variants }
+    responses.push(
+      json({ location: {}, data: [] }),
+      json({ location: {}, data: [model] }),
+      json({ location: {}, data: model }),
+    )
+
+    const catalog = await opencodeClient.getProvidersForConfig("/repo/app")
+    expect(catalog.models[0]?.variants.map((variant: { id: string }) => variant.id)).toEqual(["high", "low"])
+    expect(catalog.models[0]).toEqual(model)
+  })
+
+  test("a fresh provider read waits out the one in flight and reads again", async () => {
+    const answer = (request: CapturedRequest) =>
+      request.url.pathname === "/api/provider"
+        ? json({ location: {}, data: [{ id: "openai", name: "OpenAI" }] })
+        : request.url.pathname === "/api/model"
+          ? json({ location: {}, data: [{ id: "openai/x", modelID: "x", providerID: "openai" }] })
+          : json({ location: {}, data: { id: "openai/x", modelID: "x", providerID: "openai" } })
+    responses.push(answer, answer, answer, answer, answer, answer)
+    const before = requests.length
+
+    const first = opencodeClient.getProvidersForConfig("/repo/app")
+    const joined = opencodeClient.getProvidersForConfig("/repo/app")
+    const fresh = opencodeClient.getProvidersForConfig("/repo/app", { fresh: true })
+    const [firstCatalog, joinedCatalog, freshCatalog] = await Promise.all([first, joined, fresh])
+
+    // One catalog read is three requests: the joined call adds none, the fresh one three more.
+    expect(requests.length - before).toBe(6)
+    expect(joinedCatalog).toBe(firstCatalog)
+    expect(freshCatalog).not.toBe(firstCatalog)
+  })
+})
+
+describe("providers of an isolated space", () => {
+  test("are the host's, asked with no directory, while models come from the space", async () => {
+    const space = "/spaces/a1b2c3d4e5f6/app"
+    const answer = (request: CapturedRequest) =>
+      request.url.pathname.endsWith("/provider")
+        ? json({ location: {}, data: [{ id: "anthropic", name: "Anthropic" }] })
+        : request.url.pathname.endsWith("/model")
+          ? json({ location: {}, data: [{ id: "anthropic/x", modelID: "x", providerID: "anthropic" }] })
+          : json({ location: {}, data: { id: "anthropic/x", modelID: "x", providerID: "anthropic" } })
+    responses.push(answer, answer, answer)
+    const before = requests.length
+    const catalog = await opencodeClient.getProvidersForConfig(space)
+    expect(catalog.providers).toEqual([{ id: "anthropic", name: "Anthropic" }])
+    const made = requests.slice(before)
+    const provider = made.find((request) => request.url.pathname.endsWith("/provider"))
+    const model = made.find((request) => request.url.pathname.endsWith("/model"))
+    // The host refuses its provider routes across the boundary, and a space directory without the
+    // prefix; the provider list names neither.
+    expect(provider?.url.pathname).toBe("/api/provider")
+    expect(provider?.headers.get("x-opencode-directory")).toBeNull()
+    expect(provider?.url.searchParams.get("directory")).toBeNull()
+    expect(model?.url.pathname.includes("/spaces/a1b2c3d4e5f6/") || model?.headers.get("x-opencode-directory") === encodeURIComponent(space)).toBe(true)
   })
 })
 

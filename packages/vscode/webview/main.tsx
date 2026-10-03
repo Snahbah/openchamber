@@ -16,6 +16,7 @@ import {
 import { getBootstrapMessages, readStoredLocaleForBootstrap } from '@openchamber/ui/lib/i18n';
 import type { VSCodeActiveEditorFile } from '@/sync/input-store';
 import { usePermissionStore } from '@openchamber/ui/stores/permissionStore';
+import { permissionPolicyWireSchema, policySnapshotFromWire } from '@openchamber/ui/stores/utils/permissionAutoAccept';
 import { processVSCodePermissionAutoAccept } from '@openchamber/ui/sync/vscode-permission-auto-accept';
 import type { AssistantMessage, Part } from '@openchamber/ui/lib/opencode/model';
 import { syncEventSessionID, type SyncEvent } from '@openchamber/ui/lib/opencode/events';
@@ -23,7 +24,6 @@ import { focusChatInput } from '@openchamber/ui/components/chat/composer/editor/
 import { hostViewerStateSchema, reportHostViewerState } from '@openchamber/ui/lib/surfaceAttention';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
-type PanelType = 'chat' | 'agentManager';
 
 declare const __OPENCHAMBER_WEBVIEW_BUILD_TIME__: string;
 
@@ -40,15 +40,14 @@ declare global {
       extensionVersion?: string;
       platform?: string;
       arch?: string;
-      panelType?: PanelType;
       viewMode?: 'sidebar' | 'editor';
       initialSessionId?: string | null;
+      initialComposer?: 'parallel' | null;
     };
     __OPENCHAMBER_VSCODE_THEME__?: VSCodeThemePayload['theme'];
     __OPENCHAMBER_VSCODE_SHIKI_THEMES__?: { light?: Record<string, unknown>; dark?: Record<string, unknown> } | null;
     __OPENCHAMBER_CONNECTION__?: { status: ConnectionStatus; error?: string; cliAvailable?: boolean };
     __OPENCHAMBER_HOME__?: string;
-    __OPENCHAMBER_PANEL_TYPE__?: PanelType;
     __OPENCHAMBER_VSCODE_WINDOW_FOCUSED__?: boolean;
   }
 }
@@ -76,9 +75,6 @@ const bootstrapConnectionStatus = () => {
 };
 
 bootstrapConnectionStatus();
-
-// Expose panel type globally for the VS Code app root to conditionally render.
-window.__OPENCHAMBER_PANEL_TYPE__ = (window.__VSCODE_CONFIG__?.panelType as PanelType) || 'chat';
 
 const handleConnectionMessage = (event: MessageEvent) => {
   const msg = event.data;
@@ -1146,6 +1142,16 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     }
   }
 
+  if (pathname === '/api/openchamber/enterprise-policy' && method === 'GET') {
+    try {
+      const data = await sendBridgeMessage('api:openchamber:enterprise-policy');
+      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return new Response(JSON.stringify({ error: message }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+  }
+
   if (pathname.startsWith('/api/openchamber/update-check')) {
     try {
       const currentVersion = url.searchParams.get('currentVersion') || undefined;
@@ -1180,9 +1186,9 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
 
-  if (pathname.startsWith('/api/opencode/directory')) {
+  if (pathname === '/api/openchamber/directory') {
     const body = await extractJsonBody(input, init, method);
-    const result = await sendBridgeMessage('api:opencode/directory', { path: body.path });
+    const result = await sendBridgeMessage('api:openchamber/directory', { path: body.path });
     return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -1202,6 +1208,23 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
       const body = method === 'PUT' ? await extractJsonBody(input, init, method) : undefined;
       const bridgeMethod = quotaCredentialMatch[2]?.toUpperCase() || method;
       const data = await sendBridgeMessage('api:quota:credentials', { providerId: quotaCredentialMatch[1], method: bridgeMethod, credential: body });
+      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return new Response(JSON.stringify({ error: message }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+  }
+
+  const quotaGiftResetMatch = pathname.match(/^\/api\/quota\/([^/]+)\/gift-reset\/use$/);
+  if (quotaGiftResetMatch && method === 'POST') {
+    const providerId = decodeURIComponent(quotaGiftResetMatch[1]);
+    try {
+      const body = await extractJsonBody(input, init, method);
+      const data = await sendBridgeMessage('api:quota:giftReset:use', {
+        providerId,
+        recordId: body.recordId,
+        resetType: body.resetType,
+      });
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2074,15 +2097,11 @@ onCommand('settingsSynced', () => {
   });
 });
 
+// The extension host keeps an on/off policy; on reads as `auto`.
 onCommand('permissionAutoAcceptSynced', (payload) => {
-  if (!payload || typeof payload !== 'object') return;
-  const snapshot = payload as { sessions?: unknown; revision?: unknown };
-  const sessions = snapshot.sessions;
-  if (!sessions || typeof sessions !== 'object') return;
-  usePermissionStore.getState().applySnapshot({
-    sessions: sessions as Record<string, boolean>,
-    revision: typeof snapshot.revision === 'number' ? snapshot.revision : undefined,
-  });
+  const snapshot = permissionPolicyWireSchema.safeParse(payload);
+  if (!snapshot.success) return;
+  usePermissionStore.getState().applySnapshot(policySnapshotFromWire(snapshot.data));
 });
 
 // Listen for active editor file changes from the extension

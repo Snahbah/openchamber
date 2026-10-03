@@ -4,35 +4,11 @@
  */
 import { z } from 'zod';
 import {
-  JEV_API_URL,
-  JEV_MODEL,
   JEV_TIMEOUT_MS,
-  REV_API_URL,
-  REV_MODEL,
   ROUTING_INSTRUCTIONS,
   SAFETY_INSTRUCTIONS,
   SAFETY_KINDS,
-  ZEN_CLIENT_ID,
-  ZEN_JEV_API_URL,
-  ZEN_JEV_MODEL,
 } from './defaults.js';
-
-/**
- * Where one request goes. A saved TypeSafe key wins: the user chose it and it
- * carries their own quota. Without one, OpenChamber prefers the local sovereign
- * Rev daemon (REV_API_URL, default http://127.0.0.1:3840). If Rev is disabled,
- * the same questions go to the free Jev model OpenCode Zen serves without a
- * credential, identified as OpenChamber.
- */
-export const jevEndpoint = (token, { revUrl = REV_API_URL } = {}) => {
-  if (token) {
-    return { url: JEV_API_URL, model: JEV_MODEL, headers: { authorization: `Bearer ${token}` }, source: 'typesafe' };
-  }
-  if (revUrl) {
-    return { url: revUrl, model: REV_MODEL, headers: {}, source: 'rev-local' };
-  }
-  return { url: ZEN_JEV_API_URL, model: ZEN_JEV_MODEL, headers: { 'x-opencode-client': ZEN_CLIENT_ID }, source: 'zen-free' };
-};
 
 export const buildRoutingRequest = ({ categories, history, request, activeModel = null }) => {
   const criteria = {};
@@ -210,15 +186,18 @@ export const askRev = async ({ endpoint, request, fetchImpl, signal, started }) 
   throw new Error('Rev received an unrecognised question type');
 };
 
-export const createJevClient = ({ fetchImpl = fetch, timeoutMs = JEV_TIMEOUT_MS, revUrl = REV_API_URL } = {}) => ({
-  /** Resolves to the parsed answers; throws with `status` on an HTTP error and `code: 'timeout'` on abort. */
-  ask: async (request, token) => {
+export const createJevClient = ({ fetchImpl = fetch, timeoutMs = JEV_TIMEOUT_MS } = {}) => ({
+  /**
+   * `endpoint` comes from `classifierEndpoint`, or is the local Rev override
+   * (`source: 'rev-local'`) when the operator runs a Rev daemon. Resolves to the
+   * parsed answers; throws with `status` on an HTTP error and `code: 'timeout'`
+   * on abort.
+   */
+  ask: async (request, endpoint) => {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), timeoutMs);
     const started = Date.now();
-    let endpoint = null;
     try {
-      endpoint = jevEndpoint(token, { revUrl });
       if (endpoint.source === 'rev-local') {
         return await askRev({ endpoint, request, fetchImpl, signal: abort.signal, started });
       }

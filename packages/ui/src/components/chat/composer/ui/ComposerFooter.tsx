@@ -19,11 +19,15 @@ import { Icon } from '@/components/icon/Icon';
 import type { GuestAttachItem } from '@/hooks/useGuestSurfaces';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { isVSCodeRuntime } from '@/lib/desktop';
+import { isDictationCaptureSupported } from '@/lib/dictation/use-dictation-audio-source';
 import { ModelControls } from '../../ModelControls';
 import { ComposerActionButtons } from './ComposerActionButtons';
 import { ComposerAttachmentControls } from './ComposerAttachmentControls';
 import { FocusModeButton } from './FocusModeButton';
 import { PermissionAutoAcceptButton } from './PermissionAutoAcceptButton';
+import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
 import type { BtwSelection } from '@/stores/useBtwStore';
 
 const MemoModelControls = React.memo(ModelControls);
@@ -49,21 +53,20 @@ export interface ComposerFooterProps {
     canAbort: boolean;
     hasContent: boolean;
     isExpandedInput: boolean;
-    permissionAutoAcceptEnabled: boolean;
+    permissionMode: PermissionMode;
     isPermissionAutoAcceptInteractive: boolean;
     dictationActive: boolean;
 
     onOpenSettings?: () => void;
     onPickLocalFiles: () => void;
-    onOpenIssuePicker: () => void;
-    onOpenPrPicker: () => void;
+    onOpenGitHubPicker: () => void;
     showLinearPicker?: boolean;
     onOpenLinearPicker?: () => void;
     attachGuests?: readonly GuestAttachItem[];
     onOpenGuestAttach?: (guestId: string) => void;
     onOpenAttachSheet: () => void;
     onToggleExpandedInput: () => void;
-    onTogglePermissionAutoAccept: () => void;
+    onCyclePermissionMode: () => void;
     onPrimaryAction: () => void;
     onQueueMessage: () => void;
     onAbort: () => void;
@@ -75,6 +78,10 @@ export interface ComposerFooterProps {
     isBtw?: boolean;
     modelSessionId?: string | null;
     btwSelection: BtwSelection;
+    /** Offers "Run on several models" in the model picker (desktop). */
+    onRunInParallel?: () => void;
+    /** Set while the composer is in "Run in parallel" mode: the primary action launches the run. */
+    parallelRun?: { runCount: number; launching: boolean; onLaunch: () => void } | null;
 }
 
 export function ComposerFooter(props: ComposerFooterProps) {
@@ -97,20 +104,19 @@ export function ComposerFooter(props: ComposerFooterProps) {
         canAbort,
         hasContent,
         isExpandedInput,
-        permissionAutoAcceptEnabled,
+        permissionMode,
         isPermissionAutoAcceptInteractive,
         dictationActive,
         onOpenSettings,
         onPickLocalFiles,
-        onOpenIssuePicker,
-        onOpenPrPicker,
+        onOpenGitHubPicker,
         showLinearPicker,
         onOpenLinearPicker,
         attachGuests,
         onOpenGuestAttach,
         onOpenAttachSheet,
         onToggleExpandedInput,
-        onTogglePermissionAutoAccept,
+        onCyclePermissionMode,
         onPrimaryAction,
         onQueueMessage,
         onAbort,
@@ -122,7 +128,13 @@ export function ComposerFooter(props: ComposerFooterProps) {
         isBtw = false,
         modelSessionId,
         btwSelection,
+        onRunInParallel,
+        parallelRun = null,
     } = props;
+
+    const dictationEnabled = useConfigStore((state) => state.dictationEnabled);
+    const [dictationSupported] = React.useState(() => !isVSCodeRuntime() && isDictationCaptureSupported());
+    const showDictation = dictationEnabled && dictationSupported;
 
     return (
         <div
@@ -146,8 +158,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
                                 footerIconButtonClass={footerIconButtonClass}
                                 iconSizeClass={iconSizeClass}
                                 handlePickLocalFiles={onPickLocalFiles}
-                                openIssuePicker={onOpenIssuePicker}
-                                openPrPicker={onOpenPrPicker}
+                                openGitHubPicker={onOpenGitHubPicker}
                                 showLinearPicker={showLinearPicker}
                                 openLinearPicker={onOpenLinearPicker}
                                 onOpenSettings={isBtw ? undefined : onOpenSettings}
@@ -160,8 +171,8 @@ export function ComposerFooter(props: ComposerFooterProps) {
                                 footerIconButtonClass={footerIconButtonClass}
                                 iconSizeClass={iconSizeClass}
                                 isInteractive={isPermissionAutoAcceptInteractive}
-                                permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
-                                handlePermissionAutoAcceptToggle={onTogglePermissionAutoAccept}
+                                permissionMode={permissionMode}
+                                handlePermissionModeCycle={onCyclePermissionMode}
                             />
                             {!isBtw ? <SessionGoalButton
                                 sessionId={currentSessionId}
@@ -174,7 +185,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
                         </div>
                         <div className="flex items-center min-w-0 gap-x-1 justify-end">
                             <div className="flex items-center gap-x-1 flex-shrink-0">
-                                {!isBtw ? <button
+                                {!isBtw && showDictation ? <button
                                     type="button"
                                     className={footerIconButtonClass}
                                     // Keep the soft keyboard open (same guard as
@@ -220,8 +231,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
                             footerIconButtonClass={footerIconButtonClass}
                             iconSizeClass={iconSizeClass}
                             handlePickLocalFiles={onPickLocalFiles}
-                            openIssuePicker={onOpenIssuePicker}
-                            openPrPicker={onOpenPrPicker}
+                            openGitHubPicker={onOpenGitHubPicker}
                             showLinearPicker={showLinearPicker}
                             openLinearPicker={onOpenLinearPicker}
                             onOpenSettings={isBtw ? undefined : onOpenSettings}
@@ -239,8 +249,8 @@ export function ComposerFooter(props: ComposerFooterProps) {
                             footerIconButtonClass={footerIconButtonClass}
                             iconSizeClass={iconSizeClass}
                             isInteractive={isPermissionAutoAcceptInteractive}
-                            permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
-                            handlePermissionAutoAcceptToggle={onTogglePermissionAutoAccept}
+                            permissionMode={permissionMode}
+                            handlePermissionModeCycle={onCyclePermissionMode}
                             withTooltip
                         />
                         {!isBtw ? <SessionGoalButton
@@ -254,7 +264,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
                         {!isBtw ? <SessionGoalObjectiveCounter length={messageLength} /> : null}
                     </div>
                     <div className={cn('flex items-center flex-1 justify-end', footerGapClass, 'md:gap-x-3')}>
-                        {isBtw ? <ModelControls className="flex-1 min-w-0 justify-end" sessionId={modelSessionId ?? null} selection={btwSelection} /> : <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} />}
+                        {parallelRun ? <div className="flex-1" /> : isBtw ? <ModelControls className="flex-1 min-w-0 justify-end" sessionId={modelSessionId ?? null} selection={btwSelection} /> : <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} onRunInParallel={onRunInParallel} />}
                         {!isBtw ? <MemoComposerDictation
                             radius={chatInputRadius}
                             isMobile={isMobile}
@@ -267,7 +277,26 @@ export function ComposerFooter(props: ComposerFooterProps) {
                             onStart={onDictationStart}
                             onContentHeightChange={onDictationContentHeightChange}
                         /> : null}
-                        <ComposerActionButtons
+                        {parallelRun ? (
+                            // Parallel mode keeps the ordinary send button: the strip above
+                            // already shows how many runs start, and submitting the form
+                            // launches them (ChatInput routes the submit to the run).
+                            <ComposerActionButtons
+                                isMobile={isMobile}
+                                footerIconButtonClass={footerIconButtonClass}
+                                sendIconSizeClass={sendIconSizeClass}
+                                stopIconSizeClass={stopIconSizeClass}
+                                canSend={canSend && parallelRun.runCount >= 2 && !parallelRun.launching}
+                                canAbort={false}
+                                hasContent={hasContent}
+                                currentSessionId={currentSessionId}
+                                newSessionDraftOpen={newSessionDraftOpen}
+                                onPrimaryAction={parallelRun.onLaunch}
+                                onQueueMessage={onQueueMessage}
+                                onAbort={onAbort}
+                                sendLabel={t('chat.parallel.runAria', { count: parallelRun.runCount })}
+                            />
+                        ) : <ComposerActionButtons
                             isMobile={isMobile}
                             footerIconButtonClass={footerIconButtonClass}
                             sendIconSizeClass={sendIconSizeClass}
@@ -280,7 +309,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
                             onPrimaryAction={onPrimaryAction}
                             onQueueMessage={onQueueMessage}
                             onAbort={onAbort}
-                        />
+                        />}
                     </div>
                 </>
             )}

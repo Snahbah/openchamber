@@ -8,7 +8,7 @@ import { getProviderAuth } from './opencodeAuth';
 import { OpenCode } from '@opencode/client';
 import { asSessionId, asSessionIdList, asSessionMetadata, asTimestamp, parseJson, type JsonValue, type SessionMetadataOnOpenCode, type SessionStateStore } from './openchamberSessionState';
 import type { OpenCodeManager } from './opencode';
-import { fetchQuotaForProvider, listConfiguredQuotaProviders } from './quotaProviders';
+import { activateQuotaGiftReset, fetchQuotaForProvider, listConfiguredQuotaProviders, type QuotaGiftResetType } from './quotaProviders';
 import { credentialStatus, deleteCredential, importCursorCredential, normalizeCredential, readCredential, validateCredential, writeCredential, type ManagedProvider } from './quotaCredentials';
 import { getSessionActivitySnapshot } from './sessionActivityWatcher';
 import { getOpenCodeUpgradeStatus, upgradeManagedOpenCode } from './opencode-upgrade-runtime';
@@ -16,6 +16,7 @@ import { normalizeWindowsDriveLetter, pathsEqualWithNormalizedDriveLetter } from
 import { resolveWorkspaceFolders } from './workspaceResolver';
 import { reconstructOriginalContentFromPatch } from './patchReconstruction';
 import type { BridgeContext, BridgeResponse } from './bridge';
+import { ENTERPRISE_MODE_ERROR, isEnterpriseMode, publicEnterprisePolicy } from '../../web/server/lib/enterprise-mode.js';
 
 const isSessionNotFound = (error: Error): boolean => error.name === 'SessionNotFoundError';
 
@@ -174,7 +175,7 @@ export async function handleSystemBridgeMessage(
   const { id, type, payload } = message;
 
   switch (type) {
-    case 'api:opencode/directory': {
+    case 'api:openchamber/directory': {
       const target = (payload as { path?: string })?.path;
       if (!target) {
         return { id, type, success: false, error: 'Path is required' };
@@ -260,6 +261,12 @@ export async function handleSystemBridgeMessage(
       return { id, type, success: true, data: { models } };
     }
 
+    // The same machine policy the web server enforces (policy file or
+    // OPENCHAMBER_ENTERPRISE_MODE in the editor's environment).
+    case 'api:openchamber:enterprise-policy': {
+      return { id, type, success: true, data: publicEnterprisePolicy() };
+    }
+
     case 'api:openchamber:update-check': {
       try {
         const body = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
@@ -278,7 +285,9 @@ export async function handleSystemBridgeMessage(
         const archRaw = typeof body.arch === 'string' && body.arch.trim().length > 0
           ? body.arch.trim()
           : os.arch();
-        const reportUsage = body.reportUsage !== false;
+        // Enterprise mode keeps the check (security fixes must reach the
+        // machine) but never reports usage.
+        const reportUsage = body.reportUsage !== false && !isEnterpriseMode();
 
         const requestBody = {
           appType: 'vscode',
@@ -429,8 +438,7 @@ export async function handleSystemBridgeMessage(
           ? directory.trim()
           : ctx?.manager?.getWorkingDirectory();
         const sources = getProviderSources(providerId, workingDirectory);
-        const auth = getProviderAuth(providerId);
-        sources.auth.exists = Boolean(auth);
+        sources.auth.exists = Boolean(await getProviderAuth(providerId));
         const config = getStoredProviderConfig(providerId, workingDirectory);
         return { id, type, success: true, data: { providerId, sources, config } };
       } catch (error) {
@@ -446,18 +454,24 @@ export async function handleSystemBridgeMessage(
         config,
         scope,
         directory,
+        hasCredential,
       } = (payload || {}) as {
         providerID?: string;
         providerId?: string;
         config?: unknown;
         scope?: string;
         directory?: string;
+        hasCredential?: boolean;
       };
       const providerId = (typeof providerID === 'string' && providerID.trim())
         || (typeof providerIdAlias === 'string' && providerIdAlias.trim())
         || '';
       if (!providerId) {
         return { id, type, success: false, error: 'Provider ID is required' };
+      }
+      // Enterprise mode: providers come only from the OpenCode config.
+      if (isEnterpriseMode()) {
+        return { id, type, success: false, error: ENTERPRISE_MODE_ERROR };
       }
       if (!config || typeof config !== 'object' || Array.isArray(config)) {
         return { id, type, success: false, error: 'Provider config is required' };
@@ -475,7 +489,7 @@ export async function handleSystemBridgeMessage(
           config,
           workingDirectory,
           normalizedScope,
-          { hasStoredAuth: Boolean(getProviderAuth(providerId)) },
+          { hasStoredAuth: hasCredential === true || Boolean(await getProviderAuth(providerId)) },
         );
         await ctx?.manager?.restart();
         return {
@@ -499,7 +513,7 @@ export async function handleSystemBridgeMessage(
 
     case 'api:quota:providers': {
       try {
-        const providers = listConfiguredQuotaProviders();
+        const providers = await listConfiguredQuotaProviders();
         return { id, type, success: true, data: { providers } };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -545,6 +559,27 @@ export async function handleSystemBridgeMessage(
       try {
         const result = await fetchQuotaForProvider(providerId);
         return { id, type, success: true, data: result };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:quota:giftReset:use': {
+      // SAFETY: bridge payloads are untrusted JSON from the webview; the cast
+      // only reads the expected fields, and activateQuotaGiftReset re-validates
+      // every value before any request leaves the extension host.
+      const { providerId, recordId, resetType } = (payload || {}) as {
+        providerId?: string;
+        recordId?: number;
+        resetType?: QuotaGiftResetType;
+      };
+      if (!providerId || recordId === undefined || !Number.isFinite(recordId) || !resetType) {
+        return { id, type, success: false, error: 'Invalid gift reset request' };
+      }
+      try {
+        await activateQuotaGiftReset(providerId, { recordId, resetType });
+        return { id, type, success: true, data: { success: true } };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { id, type, success: false, error: errorMessage };

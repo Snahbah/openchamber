@@ -13,6 +13,7 @@
  * @module quota/providers/google
  */
 
+import { readOpenCodeCredentials } from '../../../opencode/auth.js';
 import { buildResult, toNumber } from '../../utils/index.js';
 import {
   resolveGoogleAuthSources,
@@ -33,7 +34,7 @@ export const providerId = 'google';
 export const providerName = 'Agy';
 export const aliases = ['google', 'google.oauth'];
 
-export const isConfigured = () => resolveGoogleAuthSources().length > 0;
+export const isConfigured = (auth) => resolveGoogleAuthSources(auth).length > 0;
 
 const describeSummaryFailure = (sourceLabel, status) => {
   if (status === 401 || status === 403) {
@@ -61,11 +62,11 @@ const fetchAntigravityUsage = async (accessToken, projectId, sourceLabel, { fetc
 };
 
 export const fetchGoogleQuota = async ({
-  readAuthSources = resolveGoogleAuthSources,
+  readAuthSources = async () => resolveGoogleAuthSources(await readOpenCodeCredentials()),
   refreshAccessToken = refreshGoogleAccessToken,
   fetchImpl = fetch
 } = {}) => {
-  const authSources = readAuthSources();
+  const authSources = await readAuthSources();
   if (!authSources.length) {
     return buildResult({
       providerId,

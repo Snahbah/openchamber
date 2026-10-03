@@ -41,9 +41,10 @@ mock.module('@/lib/opencode/client', () => ({
   },
 }));
 mock.module('@/stores/permissionStore', () => ({
-  usePermissionStore: { getState: () => ({ isSessionAutoAccepting: () => false, hydrate: async () => undefined }) },
+  usePermissionStore: { getState: () => ({ getSessionMode: () => 'ask', hydrate: async () => undefined }) },
 }));
 mock.module('@/stores/useConfigStore', () => ({
+  markConfigCatalogStale: () => undefined,
   useConfigStore: {
     getState: () => ({ isConnected: true, hasEverConnected: true, settingsMessageStreamTransport: 'auto' }),
     setState: () => undefined,

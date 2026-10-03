@@ -8,6 +8,7 @@ import { preloadProviderLogos } from '@/hooks/useProviderLogo';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { formatUsageRowReset, formatUsageRowValue, useUsageProviderGroups } from '@/components/usage/usageGroups';
+import { UsageGiftResetButton } from '@/components/usage/UsageGiftResetButton';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { pickUsageHeadline } from './usageHeadline';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
@@ -137,7 +138,10 @@ export const WorkStatusUsageSection: React.FC = () => {
                   </span>
                 )}
                 value={metricLabel === '-' ? undefined : (
-                  <WorkStatusValue tone={windowTone(row.window)}>{metricLabel}</WorkStatusValue>
+                  <span className="inline-flex items-center gap-1">
+                    <UsageGiftResetButton window={row.window} providerId={group.providerId} />
+                    <WorkStatusValue tone={windowTone(row.window)}>{metricLabel}</WorkStatusValue>
+                  </span>
                 )}
               />
             );

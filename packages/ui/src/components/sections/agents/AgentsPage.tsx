@@ -1,4 +1,5 @@
 import React from 'react';
+import { modelVariantNames } from '@/lib/modelVariants';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
@@ -10,6 +11,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { ModelSelector } from './ModelSelector';
 import { useI18n } from '@/lib/i18n';
 import { formatModelSelection, parseModelIdentifier, parseModelSelection } from '@/lib/modelIdentifier';
+import { findCatalogModel } from '@/lib/opencode/model';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {
@@ -44,7 +46,7 @@ import { SettingsLegacyFormatNote } from '@/components/sections/shared/SettingsL
 
 type AgentVariantProvider = {
   id: string;
-  models: Array<{ modelID: string; variants: Array<{ id: string }> }>;
+  models: Array<{ id: string; modelID: string; variants: Array<{ id: string }> }>;
 };
 
 const getVariantOptionsForModel = (
@@ -57,8 +59,8 @@ const getVariantOptionsForModel = (
   }
 
   const provider = providers.find((item) => item.id === parsedModel.providerId);
-  const model = provider?.models.find((item) => item.modelID === parsedModel.modelId);
-  return model?.variants.map((variant) => variant.id) ?? [];
+  const model = findCatalogModel(provider?.models, parsedModel.modelId);
+  return modelVariantNames(model);
 };
 /** Everything the page writes into the agent's config file. */
 interface FormState {
@@ -299,6 +301,7 @@ export const AgentsPage: React.FC = () => {
     };
     if (trimmedDescription) config.description = trimmedDescription;
     if (isNewAgent && draftScope) config.scope = draftScope;
+    if (isNewAgent && agentDraft?.hidden !== undefined) config.hidden = agentDraft.hidden;
     // A duplicate carries the source agent's rules; the permissions editor only
     // appears once the agent exists, so this is the one path that writes them
     // at creation time.

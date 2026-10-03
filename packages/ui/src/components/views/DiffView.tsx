@@ -17,6 +17,7 @@ import { useBranchComparisonBase } from '@/hooks/useBranchComparisonBase';
 import { coerceDiffScope, isBranchScopeAvailable, isBranchScopeDefinitelyUnavailable, useRangeKeyedCache, useBoundedDirectoryRetry } from './branchDiffScope';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { cn } from '@/lib/utils';
+import { normalizePath } from '@/lib/pathNormalization';
 import type { GitStatus, GitSubmoduleState } from '@/lib/api/types';
 import { GitPathUnavailableError, type GitPathUnavailableReason } from '@/lib/api/git-path-diff';
 import { SubmoduleDiffSummary } from './SubmoduleDiffSummary';
@@ -38,6 +39,7 @@ import type { DiffViewMode } from '@/components/chat/message/types';
 import { ReviewFlowDialog, type ReviewFlowExecution } from '@/components/session/ReviewFlowDialog';
 import { PierreDiffViewer, type ContextExpansionRequest, type DiffHunkActions } from './PierreDiffViewer';
 import { HunkActions, type HunkBusyState, type HunkDiffAction } from './git/HunkActions';
+import { describeChange } from './git/changeStatus';
 import { useDeviceInfo } from '@/lib/device';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
@@ -47,7 +49,6 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { findDiffScrollAnchor, getRestoredDiffScrollTop, type DiffScrollAnchor } from './diffScrollAnchor';
 import { useI18n } from '@/lib/i18n';
 import { buildDiffTreeRows } from './diffFileTree';
-import type { I18nKey } from '@/lib/i18n/store';
 import { fileDiffFromPatch, isBinaryPatch, extractHunkPatch, haveMatchingPatchVersions, getPatchHunkAnchors } from '@/lib/diff/patchFileDiff';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { startReviewFlow } from '@/lib/reviewFlow';
@@ -128,38 +129,6 @@ const BinaryDiffPlaceholder = React.memo(() => {
     );
 });
 
-type ChangeDescriptor = {
-    code: string;
-    color: string;
-    descriptionKey: I18nKey;
-};
-
-const CHANGE_DESCRIPTORS: Record<string, ChangeDescriptor> = {
-    '?': { code: '?', color: 'var(--status-info)', descriptionKey: 'diffView.change.untracked' },
-    A: { code: 'A', color: 'var(--status-success)', descriptionKey: 'diffView.change.new' },
-    D: { code: 'D', color: 'var(--status-error)', descriptionKey: 'diffView.change.deleted' },
-    R: { code: 'R', color: 'var(--status-info)', descriptionKey: 'diffView.change.renamed' },
-    C: { code: 'C', color: 'var(--status-info)', descriptionKey: 'diffView.change.copied' },
-    M: { code: 'M', color: 'var(--status-warning)', descriptionKey: 'diffView.change.modified' },
-};
-
-const DEFAULT_CHANGE_DESCRIPTOR = CHANGE_DESCRIPTORS.M;
-
-const getChangeSymbol = (file: GitStatus['files'][number]): string => {
-    const indexCode = file.index?.trim();
-    const workingCode = file.working_dir?.trim();
-
-    if (indexCode && indexCode !== '?') return indexCode.charAt(0);
-    if (workingCode) return workingCode.charAt(0);
-
-    return indexCode?.charAt(0) || workingCode?.charAt(0) || 'M';
-};
-
-const describeChange = (file: GitStatus['files'][number]): ChangeDescriptor => {
-    const symbol = getChangeSymbol(file);
-    return CHANGE_DESCRIPTORS[symbol] ?? DEFAULT_CHANGE_DESCRIPTOR;
-};
-
 const isNewStatusFile = (file: GitStatus['files'][number]): boolean => {
     const { index, working_dir: workingDir } = file;
     return index === 'A' || workingDir === 'A' || index === '?' || workingDir === '?';
@@ -178,9 +147,6 @@ const isWorkingStatusFile = (file: GitStatus['files'][number]): boolean => {
 const toAbsolutePath = (directory: string, filePath: string): string => {
     return toAbsoluteFilePath(directory, filePath);
 };
-
-const normalizePath = (value?: string | null): string =>
-    (value || '').replace(/\\/g, '/').replace(/\/+$/, '');
 
 const getFirstChangedModifiedLine = (original: string, modified: string): number => {
     const originalLines = original.split('\n');
@@ -2094,6 +2060,16 @@ export const DiffView: React.FC<DiffViewProps> = ({
     const treeSelectedFile = isTreeMode
         ? (treeFileOrder.find((file) => file.path === displayFile) ?? treeFileOrder[0] ?? null)
         : null;
+    const treeSelectedPath = treeSelectedFile?.path ?? null;
+
+    // Tree mode renders its file open whether or not it is in the expanded
+    // set, but branch/commit/PR diffs are fetched only for expanded paths:
+    // the default first file would otherwise wait on a diff nobody requests.
+    React.useEffect(() => {
+        if (treeSelectedPath && !expandedFiles.has(treeSelectedPath)) {
+            expandStackedFile(treeSelectedPath);
+        }
+    }, [expandStackedFile, expandedFiles, treeSelectedPath]);
 
     const handleSelectFileAndScroll = React.useCallback((value: string) => {
         cancelPendingScrollAlignment();
@@ -2133,6 +2109,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
             )) {
                 return;
             }
+            event.preventDefault();
             if (navigationFiles.length === 0) return;
             const delta = event.key === 'ArrowDown' ? 1 : -1;
             const currentPath = isTreeMode ? treeSelectedFile?.path : displayFile;
@@ -2142,7 +2119,6 @@ export const DiffView: React.FC<DiffViewProps> = ({
                 : index + delta;
             const next = navigationFiles[nextIndex];
             if (!next) return;
-            event.preventDefault();
             handleSelectFileAndScroll(next.path);
         };
         window.addEventListener('keydown', handleKeyDown);

@@ -21,10 +21,11 @@ const OPENCODE_AGENT_KEEP_ALIVE_MS = 30_000;
 // exists to prevent (measured: at 64 concurrent requests, a cap of 32 left
 // 303 sockets in TIME_WAIT versus 0 at 256).
 const OPENCODE_AGENT_MAX_FREE_SOCKETS = 256;
-// Evicts idle free sockets from our side. Without it the only thing that
-// retires an idle pooled socket is the upstream closing it. Note this is
-// distinct from `keepAliveMsecs`, which is the TCP keep-alive probe delay.
-const OPENCODE_AGENT_IDLE_TIMEOUT_MS = 60_000;
+// Evicts idle free sockets from our side before upstream servers close them
+// (Node default keepAliveTimeout is 5s, Bun default idle timeout is 10s).
+// Setting this higher than upstream causes stale socket reuse where the
+// client writes into a dead socket and gets 'socket hang up' (ECONNRESET).
+const OPENCODE_AGENT_IDLE_TIMEOUT_MS = 4_000;
 
 const OPENCODE_AGENT_OPTIONS = {
   keepAlive: true,
@@ -236,7 +237,7 @@ const SESSION_LIST_ALLOWED_FIELDS = [
   'fork',
 ];
 
-const sanitizeSessionListItem = (session) => {
+export const sanitizeSessionListItem = (session) => {
   if (!session || typeof session !== 'object' || Array.isArray(session)) {
     return session;
   }
@@ -307,6 +308,11 @@ export const registerOpenCodeProxy = (app, deps) => {
     // migrated.
     getArchivedSessions = null,
     getStoredSessionMetadata = null,
+    // Isolated spaces, when the feature's switch is on: the merged session list, and the hub
+    // whose space events the global SSE stream carries beside the host's. Both absent means
+    // the host's own answers go out exactly as before spaces.
+    mergeSpaceSessionList = null,
+    spaceEventHub = null,
   } = deps;
 
   /**
@@ -454,6 +460,9 @@ export const registerOpenCodeProxy = (app, deps) => {
   const replayParsedBody = (proxyReq, req) => {
     const body = serializeParsedBody(req, proxyReq);
     if (!body) return;
+    // http-proxy copies the incoming headers, so a chunked request would reach
+    // OpenCode with both framing headers and be rejected as ambiguous.
+    proxyReq.removeHeader('transfer-encoding');
     proxyReq.setHeader('content-length', String(body.length));
     proxyReq.write(body);
   };
@@ -550,6 +559,7 @@ export const registerOpenCodeProxy = (app, deps) => {
     let heartbeatTimer = null;
     let upstreamStallTimer = null;
     let didUpstreamStall = false;
+    let unsubscribeSpaceEvents = null;
     let writeQueue = Promise.resolve(true);
     const sseBoundary = createSseBoundaryTracker();
 
@@ -644,6 +654,26 @@ export const registerOpenCodeProxy = (app, deps) => {
         return writeQueue;
       };
 
+      // The events of isolated spaces ride the global stream too, one block each, written
+      // only between the upstream's own blocks so a block of the host's is never cut.
+      // A directory in the query or in the header scopes the stream to the host's one directory.
+      const isGlobalStream = !new URL(requestUrl, 'http://localhost').searchParams.get('directory') && !req.get('x-opencode-directory');
+      const pendingSpaceBlocks = [];
+      const flushSpaceBlocks = async () => {
+        while (pendingSpaceBlocks.length > 0 && sseBoundary.isAtBoundary() && !abortController.signal.aborted) {
+          const canContinue = await enqueueSseWrite(pendingSpaceBlocks.shift());
+          if (!canContinue) return false;
+        }
+        return true;
+      };
+      if (spaceEventHub && isGlobalStream) {
+        unsubscribeSpaceEvents = spaceEventHub.subscribeEvent((event) => {
+          if (event.spaceId === null) return;
+          pendingSpaceBlocks.push(`data: ${JSON.stringify(event.payload)}\n\n`);
+          void flushSpaceBlocks();
+        }, { spaces: true });
+      }
+
       scheduleHeartbeat();
       resetUpstreamStallTimer();
 
@@ -658,6 +688,9 @@ export const registerOpenCodeProxy = (app, deps) => {
           sseBoundary.observe(value);
           const canContinue = await enqueueSseWrite(value);
           if (!canContinue) {
+            break;
+          }
+          if (!await flushSpaceBlocks()) {
             break;
           }
         }
@@ -679,6 +712,7 @@ export const registerOpenCodeProxy = (app, deps) => {
         res.end();
       }
     } finally {
+      unsubscribeSpaceEvents?.();
       if (heartbeatTimer) {
         clearTimeout(heartbeatTimer);
         heartbeatTimer = null;
@@ -763,7 +797,13 @@ export const registerOpenCodeProxy = (app, deps) => {
       }
 
       res.setHeader('content-type', result.contentType);
-      res.json(await overlayOwnedStateOnList(sanitizeSessionListPayload(result.payload)));
+      const hostList = await overlayOwnedStateOnList(sanitizeSessionListPayload(result.payload));
+      // The first page of the global list carries every space's sessions after the host's; a
+      // later page, and a list scoped to one directory, are the host's alone.
+      const listQuery = new URL(upstreamPath, 'http://localhost').searchParams;
+      const scopedToDirectory = Boolean(listQuery.get('directory') || req.get('x-opencode-directory'));
+      const wantsSpaces = typeof mergeSpaceSessionList === 'function' && !listQuery.get('cursor') && !scopedToDirectory;
+      res.json(wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList);
     } catch (error) {
       if (isAbortError(error)) {
         return;
@@ -1005,6 +1045,15 @@ export const registerOpenCodeProxy = (app, deps) => {
         }
       },
       error: (err, req, res) => {
+        if (
+          req?.aborted ||
+          res?.writableEnded ||
+          res?.destroyed ||
+          req?.socket?.destroyed ||
+          res?.socket?.destroyed
+        ) {
+          return;
+        }
         console.error('[proxy] OpenCode proxy error:', err.message);
         if (req?.[PROXY_TIMEOUT_MARKER]) {
           return;
