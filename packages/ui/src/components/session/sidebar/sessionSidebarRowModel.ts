@@ -55,7 +55,7 @@ export type SessionSidebarRow =
   // A multi-run: one derived parent row over its member sessions. It is not a
   // session, so it never enters selection, and its lanes render as session
   // rows one level deeper when it is expanded.
-  | (RowBase & { kind: 'run'; run: MultiRunSummary; depth: number; laneNodes: readonly SessionNode[]; projectId: string | null; projectLabel: string | null; groupDirectory: string | null; renderContext: SessionSidebarRenderContext; expansionKey: string; expanded: boolean; forceExpanded: boolean })
+  | (RowBase & { kind: 'run'; run: MultiRunSummary; depth: number; laneNodes: readonly SessionNode[]; blockingSessionIds: readonly string[]; projectId: string | null; projectLabel: string | null; groupDirectory: string | null; renderContext: SessionSidebarRenderContext; expansionKey: string; expanded: boolean; forceExpanded: boolean })
   | (RowBase & { kind: 'empty'; emptyKind: 'sidebar' | 'search' | 'group' | 'archived'; group?: SessionGroup; projectId?: string | null })
   | (RowBase & { kind: 'status'; status: SessionSidebarGroupStatus; group: SessionGroup; groupKey: string })
   | (RowBase & { kind: 'show-control'; control: 'more' | 'fewer'; containerKey: string; currentCount: number; increment: number });
@@ -316,6 +316,9 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     renderContext: SessionSidebarRenderContext;
     secondaryMeta?: SessionSidebarActivityItem['secondaryMeta'];
     getSecondaryMeta?: SessionSidebarActivityItem['getSecondaryMeta'];
+    // Per-row badge scopes for containers whose top rows come from different
+    // activity items, such as the lanes of a multi-run.
+    getBlockingBadgeSessionScopes?: (sessionId: string) => readonly BlockingBadgeSessionScope[] | undefined;
     indexedNodes?: IndexedSessionNodes;
     selectionPoolOffset?: number;
     // Nesting level of the container's top rows: 1 inside a folder, so its
@@ -329,6 +332,12 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     const expanded = options.renderContext !== 'timeline' && (search || args.expandedParents.has(expansionKey));
     const firstLaneId = entry.lanes[0]?.session.id;
     const meta = firstLaneId && options.getSecondaryMeta ? options.getSecondaryMeta(firstLaneId) : options.secondaryMeta;
+    // Activity lanes come without their subagent rows, so the sessions whose
+    // requests block a lane (the lane and its hidden subagents) ride along for
+    // the run row's badge.
+    const blockingSessionIds = Object.freeze([...new Set(entry.lanes.flatMap((lane) => (
+      options.getBlockingBadgeSessionScopes?.(lane.session.id) ?? []
+    ).flatMap((scope) => scope.sessionIDs)))]);
     push({
       kind: 'run',
       key: keyFor(`${options.containerKey}:run:${entry.run.key}`),
@@ -336,6 +345,7 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
       run: entry.run,
       depth: options.baseDepth ?? 0,
       laneNodes: Object.freeze([...entry.lanes]),
+      blockingSessionIds,
       projectId: options.projectId,
       projectLabel: meta?.projectLabel ?? null,
       groupDirectory: options.groupDirectory,
@@ -366,7 +376,9 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         key: rowKey,
         estimateSize: options.renderContext === 'timeline' ? TIMELINE_SESSION_ESTIMATE : SESSION_ESTIMATE,
         node: current.node,
-        blockingBadgeSessionScopes: current.depth === baseDepth ? options.blockingBadgeSessionScopes : undefined,
+        blockingBadgeSessionScopes: current.depth === baseDepth
+          ? options.getBlockingBadgeSessionScopes?.(current.node.session.id) ?? options.blockingBadgeSessionScopes
+          : undefined,
         depth: current.depth,
         projectId: options.projectId,
         groupDirectory: current.directory,
@@ -608,10 +620,13 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
       item.node.session.id,
       item.getSecondaryMeta ? item.getSecondaryMeta(item.node.session.id) : item.secondaryMeta,
     ]));
+    const badgeScopesById = new Map(entry.items.map((item) => [item.node.session.id, item.blockingBadgeSessionScopes]));
     appendRun({ run: entry.run, lanes }, {
       nodes: lanes, containerKey, projectId: first.projectId, groupDirectory: first.groupDirectory,
       ownerKey, selectionScopeKey: scoped ? ownerKey : null, archived: false, renderContext,
-      getSecondaryMeta: (sessionId) => metaById.get(sessionId) ?? null, indexedNodes: indexed, selectionPoolOffset,
+      getSecondaryMeta: (sessionId) => metaById.get(sessionId) ?? null,
+      getBlockingBadgeSessionScopes: (sessionId) => badgeScopesById.get(sessionId),
+      indexedNodes: indexed, selectionPoolOffset,
     });
   };
 
