@@ -621,6 +621,7 @@ const estateKnowledgeEngine = createEstateKnowledgeEngine({
   vaultDbPath: path.join(OPENCHAMBER_DATA_DIR, 'stores', 'vault'),
   typescriptDbPath: path.join(baseLanceDir, 'typescript_reference.lance'),
   adobeDbPath: path.join(baseLanceDir, 'adobe_codex.lance'),
+  maxonDbPath: path.join(baseLanceDir, 'maxon_lancedb.lance'),
 });
 
 // Tier 1 episodic event log (River): append-only Lamport-sequenced JSONL log

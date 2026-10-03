@@ -48,6 +48,7 @@ Shared contracts must define intentional behavior for every applicable runtime: 
 - Enforce security and correctness in core/runtime logic, not only UI visibility or prompts.
 - Keep entrypoints and bridges thin; place domain logic in focused owning modules.
 - Update owning documentation when module ownership, contracts, or invariants change.
+- **Never disable or remove OpenChamber memory unilaterally.** The memory system is a native agent tool (`openchamber_memory`) backed by in-process LanceDB, not an MCP server; a model that "knows better" may not turn it off, re-scope it, or cull its MCP servers. The live tool-driving MCPs and the reference LanceDBs (vault, typescript, adobe, maxon) are the user's decision to change, not a model's. See `packages/web/server/lib/vault-index/DOCUMENTATION.md`.
 
 ## Correctness Invariants
 
@@ -79,6 +80,7 @@ High-value anchors:
 - Electron: `packages/electron/README.md`
 - Mobile: `packages/mobile/README.md`
 - SDK: `packages/sdk/DOCUMENTATION.md`
+- Memory & reference LanceDBs (the one door, not MCP): `packages/web/server/lib/vault-index/DOCUMENTATION.md`
 
 ## Project Skills
 

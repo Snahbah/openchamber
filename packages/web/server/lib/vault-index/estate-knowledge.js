@@ -43,11 +43,13 @@ export const createEstateKnowledgeEngine = ({
   vaultDbPath,
   typescriptDbPath,
   adobeDbPath,
+  maxonDbPath,
   embedder = null, // in-process 768-d WASM embedder
 }) => {
   let vaultTable = null;
   let tsTable = null;
   let adobeTable = null;
+  let maxonTable = null;
   let initPromise = null;
 
   const init = async () => {
@@ -75,6 +77,14 @@ export const createEstateKnowledgeEngine = ({
             adobeTable = await db.openTable('adobe_cards');
           } catch (e) {
             console.warn('[estate-knowledge] adobe table not available:', e.message);
+          }
+        }
+        if (maxonDbPath) {
+          try {
+            const db = await lancedb.connect(maxonDbPath);
+            maxonTable = await db.openTable('maxon_core');
+          } catch (e) {
+            console.warn('[estate-knowledge] maxon table not available:', e.message);
           }
         }
       })();
@@ -275,7 +285,34 @@ export const createEstateKnowledgeEngine = ({
   };
 
   /**
-   * Unified search across domains ('vault', 'typescript', 'adobe', or 'all').
+   * FTS search across the Maxon C4D knowledge base.
+   */
+  const queryMaxon = async (queryText, { limit = 5 } = {}) => {
+    await init();
+    if (!maxonTable) return [];
+
+    let rows = [];
+    try {
+      rows = await maxonTable.search(queryText, 'fts').limit(limit * 2).toArray();
+    } catch {
+      rows = await maxonTable.query().limit(limit).toArray();
+    }
+
+    return rows.slice(0, limit).map((r) => ({
+      domain: 'maxon',
+      id: r.id,
+      text: r.text,
+      source: r.source,
+      category: r.category,
+      engine: r.engine,
+      language: r.language,
+      symbolIds: r.symbol_ids || [],
+      verified: r.is_verified_solution,
+    }));
+  };
+
+  /**
+   * Unified search across domains ('vault', 'typescript', 'adobe', 'maxon', or 'all').
    */
   const query = async (queryText, { domain = 'vault', limit = 5, ...options } = {}) => {
     if (domain === 'vault') {
@@ -287,15 +324,19 @@ export const createEstateKnowledgeEngine = ({
     if (domain === 'adobe') {
       return queryAdobe(queryText, { limit, ...options });
     }
+    if (domain === 'maxon') {
+      return queryMaxon(queryText, { limit });
+    }
     if (domain === 'all') {
-      const [vaultResults, tsResults, adobeResults] = await Promise.all([
+      const [vaultResults, tsResults, adobeResults, maxonResults] = await Promise.all([
         queryVault(queryText, limit),
         queryTypeScript(queryText, limit),
         queryAdobe(queryText, { limit, ...options }),
+        queryMaxon(queryText, { limit }),
       ]);
-      return [...vaultResults, ...tsResults, ...adobeResults].slice(0, limit * 2);
+      return [...vaultResults, ...tsResults, ...adobeResults, ...maxonResults].slice(0, limit * 2);
     }
-    throw new Error(`Unknown domain: '${domain}'. Valid domains: 'vault', 'typescript', 'adobe', 'all'.`);
+    throw new Error(`Unknown domain: '${domain}'. Valid domains: 'vault', 'typescript', 'adobe', 'maxon', 'all'.`);
   };
 
   return {
@@ -304,6 +345,7 @@ export const createEstateKnowledgeEngine = ({
     queryVault,
     queryTypeScript,
     queryAdobe,
+    queryMaxon,
     getExecutionCard,
     checkNegativeGuardrails,
     preflight,

@@ -227,7 +227,7 @@ describe('managed agent tool runtime', () => {
 
     expect(Object.keys(tool)).toEqual(['openchamber', 'openchamber_memory']);
     expect(Object.keys(tool.openchamber_memory.input.properties.parameters.properties).sort())
-      .toEqual(['body', 'memoryId', 'scope', 'title', 'type']);
+      .toEqual(['body', 'domain', 'memoryId', 'query', 'scope', 'title', 'type']);
     // Memory inputs must not leak into the control tool's schema, which the
     // model pays for on every unrelated call.
     expect(Object.keys(tool.openchamber.input.properties.parameters.properties)).not.toContain('memoryId');
