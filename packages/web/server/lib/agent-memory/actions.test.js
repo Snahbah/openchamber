@@ -375,6 +375,44 @@ describe('promote', () => {
     expect(called).toEqual({ text: 'vector test', limit: 3 });
   });
 
+  test('forwards memory.query filters to the estate knowledge engine', async () => {
+    let called = null;
+    const filterActions = createAgentMemoryActions({
+      agentMemoryRuntime: runtime,
+      vaultPromotion,
+      estateKnowledgeEngine: {
+        query: async (text, options) => {
+          called = { text, options };
+          return [];
+        },
+      },
+      createError: (message, status) => new TestError(message, status),
+      resolveProjectId: async (directory) => createProjectIdFromPath(directory),
+      isAgentMemoryEnabled: async () => true,
+    });
+
+    await filterActions.execute('memory.query', {
+      query: 'worktree',
+      domain: 'openchamber',
+      limit: 2,
+      component: 'git-worktree',
+      pillar: 'Pillar 3: Git Worktree & Multi-Run Orchestration',
+      guardrailsOnly: true,
+      category: '   ',
+    }, DIRECTORY);
+
+    expect(called).toEqual({
+      text: 'worktree',
+      options: {
+        domain: 'openchamber',
+        limit: 2,
+        component: 'git-worktree',
+        pillar: 'Pillar 3: Git Worktree & Multi-Run Orchestration',
+        guardrailsOnly: true,
+      },
+    });
+  });
+
   test('is gated when memory is switched off', async () => {
     const disabled = createAgentMemoryActions({
       agentMemoryRuntime: runtime,

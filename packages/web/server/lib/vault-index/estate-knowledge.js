@@ -44,12 +44,18 @@ export const createEstateKnowledgeEngine = ({
   typescriptDbPath,
   adobeDbPath,
   maxonDbPath,
+  openchamberDbPath,
+  unrealDbPath,
+  rustDbPath,
   embedder = null, // in-process 768-d WASM embedder
 }) => {
   let vaultTable = null;
   let tsTable = null;
   let adobeTable = null;
   let maxonTable = null;
+  let openchamberTable = null;
+  let unrealTable = null;
+  let rustTable = null;
   let initPromise = null;
 
   const init = async () => {
@@ -85,6 +91,30 @@ export const createEstateKnowledgeEngine = ({
             maxonTable = await db.openTable('maxon_core');
           } catch (e) {
             console.warn('[estate-knowledge] maxon table not available:', e.message);
+          }
+        }
+        if (openchamberDbPath) {
+          try {
+            const db = await lancedb.connect(openchamberDbPath);
+            openchamberTable = await db.openTable('openchamber_core');
+          } catch (e) {
+            console.warn('[estate-knowledge] openchamber table not available:', e.message);
+          }
+        }
+        if (unrealDbPath) {
+          try {
+            const db = await lancedb.connect(unrealDbPath);
+            unrealTable = await db.openTable('unreal_engine_core');
+          } catch (e) {
+            console.warn('[estate-knowledge] unreal table not available:', e.message);
+          }
+        }
+        if (rustDbPath) {
+          try {
+            const db = await lancedb.connect(rustDbPath);
+            rustTable = await db.openTable('rust_core');
+          } catch (e) {
+            console.warn('[estate-knowledge] rust table not available:', e.message);
           }
         }
       })();
@@ -312,7 +342,125 @@ export const createEstateKnowledgeEngine = ({
   };
 
   /**
-   * Unified search across domains ('vault', 'typescript', 'adobe', 'maxon', or 'all').
+   * Hybrid vector & Tantivy FTS search across OpenChamber estate reference knowledge.
+   */
+  const queryOpenChamber = async (queryText, { limit = 5, pillar = null, category = null, component = null, guardrailsOnly = false } = {}) => {
+    await init();
+    if (!openchamberTable) return [];
+
+    const conditions = [];
+    if (pillar) conditions.push(`pillar = '${pillar.replace(/'/g, "''")}'`);
+    if (category) conditions.push(`category = '${category.replace(/'/g, "''")}'`);
+    if (component) conditions.push(`component = '${component.replace(/'/g, "''")}'`);
+    if (guardrailsOnly) conditions.push('is_guardrail = true');
+
+    const filterClause = conditions.length > 0 ? conditions.join(' AND ') : null;
+
+    let queryBuilder = openchamberTable.search(queryText, 'fts').limit(limit * 2);
+    if (filterClause) {
+      queryBuilder = queryBuilder.where(filterClause);
+    }
+
+    let rows = [];
+    try {
+      rows = await queryBuilder.toArray();
+    } catch {
+      let qb = openchamberTable.query();
+      if (filterClause) qb = qb.where(filterClause);
+      rows = await qb.limit(limit).toArray();
+    }
+
+    return rows.slice(0, limit).map((r) => ({
+      domain: 'openchamber',
+      id: r.id,
+      title: r.title,
+      pillar: r.pillar,
+      category: r.category,
+      component: r.component,
+      source: r.source,
+      source_url: r.source_url,
+      content_type: r.content_type,
+      is_guardrail: r.is_guardrail,
+      symbol_ids: r.symbol_ids || [],
+      text: r.text,
+    }));
+  };
+
+  /**
+   * Search across Unreal Engine 5.8 architecture guides & SDK.
+   */
+  const queryUnreal = async (queryText, { limit = 5, subdomain = null } = {}) => {
+    await init();
+    if (!unrealTable) return [];
+
+    let queryBuilder = unrealTable.search(queryText, 'fts').limit(limit * 2);
+    if (subdomain) {
+      queryBuilder = queryBuilder.where(`subdomain = '${subdomain.replace(/'/g, "''")}'`);
+    }
+
+    let rows = [];
+    try {
+      rows = await queryBuilder.toArray();
+    } catch {
+      rows = await unrealTable.query().limit(limit).toArray();
+    }
+
+    return rows.slice(0, limit).map((r) => ({
+      domain: 'unreal',
+      id: r.id,
+      docId: r.doc_id,
+      title: r.section_title,
+      text: r.text,
+      source: r.source,
+      sourceUrl: r.source_url,
+      subdomain: r.subdomain,
+      symbolIds: r.symbol_ids || [],
+    }));
+  };
+
+  /**
+   * Search across Rust & Arrow FFI architecture guides, memory models & SDK specs.
+   */
+  const queryRust = async (queryText, { limit = 5, subdomain = null, pillar = null } = {}) => {
+    await init();
+    if (!rustTable) return [];
+
+    const conditions = [];
+    if (subdomain) conditions.push(`subdomain = '${subdomain.replace(/'/g, "''")}'`);
+    if (pillar) conditions.push(`pillar = '${pillar.replace(/'/g, "''")}'`);
+    const filterClause = conditions.length > 0 ? conditions.join(' AND ') : null;
+
+    let queryBuilder = rustTable.search(queryText, 'fts').limit(limit * 2);
+    if (filterClause) {
+      queryBuilder = queryBuilder.where(filterClause);
+    }
+
+    let rows = [];
+    try {
+      rows = await queryBuilder.toArray();
+    } catch {
+      let qb = rustTable.query();
+      if (filterClause) qb = qb.where(filterClause);
+      rows = await qb.limit(limit).toArray();
+    }
+
+    return rows.slice(0, limit).map((r) => ({
+      domain: 'rust',
+      id: r.id,
+      docId: r.doc_id,
+      title: r.section_title,
+      text: r.text,
+      source: r.source,
+      sourceUrl: r.source_url,
+      subdomain: r.subdomain,
+      pillar: r.pillar,
+      contentType: r.content_type,
+      symbolIds: r.symbol_ids || [],
+    }));
+  };
+
+  /**
+   * Unified search across domains ('vault', 'typescript', 'adobe', 'maxon', 'openchamber', 'unreal', 'rust', or 'all').
    */
   const query = async (queryText, { domain = 'vault', limit = 5, ...options } = {}) => {
     if (domain === 'vault') {
@@ -327,16 +475,28 @@ export const createEstateKnowledgeEngine = ({
     if (domain === 'maxon') {
       return queryMaxon(queryText, { limit });
     }
+    if (domain === 'openchamber' || domain === 'oc') {
+      return queryOpenChamber(queryText, { limit, ...options });
+    }
+    if (domain === 'unreal' || domain === 'ue') {
+      return queryUnreal(queryText, { limit, ...options });
+    }
+    if (domain === 'rust' || domain === 'rs') {
+      return queryRust(queryText, { limit, ...options });
+    }
     if (domain === 'all') {
-      const [vaultResults, tsResults, adobeResults, maxonResults] = await Promise.all([
+      const [vaultResults, tsResults, adobeResults, maxonResults, ocResults, ueResults, rustResults] = await Promise.all([
         queryVault(queryText, limit),
         queryTypeScript(queryText, limit),
         queryAdobe(queryText, { limit, ...options }),
         queryMaxon(queryText, { limit }),
+        queryOpenChamber(queryText, { limit, ...options }),
+        queryUnreal(queryText, { limit, ...options }),
+        queryRust(queryText, { limit, ...options }),
       ]);
-      return [...vaultResults, ...tsResults, ...adobeResults, ...maxonResults].slice(0, limit * 2);
+      return [...vaultResults, ...tsResults, ...adobeResults, ...maxonResults, ...ocResults, ...ueResults, ...rustResults].slice(0, limit * 2);
     }
-    throw new Error(`Unknown domain: '${domain}'. Valid domains: 'vault', 'typescript', 'adobe', 'maxon', 'all'.`);
+    throw new Error(`Unknown domain: '${domain}'. Valid domains: 'vault', 'typescript', 'adobe', 'maxon', 'openchamber', 'unreal', 'rust', 'all'.`);
   };
 
   return {
@@ -346,6 +506,9 @@ export const createEstateKnowledgeEngine = ({
     queryTypeScript,
     queryAdobe,
     queryMaxon,
+    queryOpenChamber,
+    queryUnreal,
+    queryRust,
     getExecutionCard,
     checkNegativeGuardrails,
     preflight,

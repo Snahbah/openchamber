@@ -655,6 +655,9 @@ const estateKnowledgeEngine = createEstateKnowledgeEngine({
   typescriptDbPath: path.join(baseLanceDir, 'typescript_reference.lance'),
   adobeDbPath: path.join(baseLanceDir, 'adobe_codex.lance'),
   maxonDbPath: path.join(baseLanceDir, 'maxon_lancedb.lance'),
+  openchamberDbPath: path.join(baseLanceDir, 'openchamber.lance'),
+  unrealDbPath: path.join(baseLanceDir, 'unreal_engine.lance'),
+  rustDbPath: path.join(baseLanceDir, 'rust_reference.lance'),
 });
 
 // Tier 1 episodic event log (River): append-only Lamport-sequenced JSONL log

@@ -206,8 +206,15 @@ export const createAgentMemoryActions = (dependencies) => {
     const limit = typeof input.limit === 'number' && input.limit > 0 ? input.limit : 5;
     const domain = asNonEmptyString(input.domain) || 'vault';
 
+    const filters = {};
+    for (const key of ['component', 'pillar', 'category', 'subdomain', 'host']) {
+      const value = asNonEmptyString(input[key]);
+      if (value) filters[key] = value;
+    }
+    if (input.guardrailsOnly === true) filters.guardrailsOnly = true;
+
     if (estateKnowledgeEngine?.query) {
-      const results = await estateKnowledgeEngine.query(text, { domain, limit });
+      const results = await estateKnowledgeEngine.query(text, { domain, limit, ...filters });
       return { ok: true, domain, results };
     }
     if (vaultIndexRuntime?.query) {

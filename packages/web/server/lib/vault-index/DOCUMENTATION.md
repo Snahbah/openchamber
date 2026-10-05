@@ -23,17 +23,21 @@ openchamber_memory tool  ──►  estate-knowledge.js (in-process LanceDB)
                                  ├── vault        memory + Obsidian vault notes
                                  ├── typescript   Waves 2 reference
                                  ├── adobe        ActionDescriptors
-                                 └── maxon        C4D / Maxon reference (maxon_core)
+                                 ├── maxon        C4D / Maxon reference (maxon_core)
+                                 ├── openchamber  OpenChamber & OpenCode architecture (openchamber_core)
+                                 ├── unreal       Unreal Engine 5.8 (unreal_engine_core)
+                                 └── rust         Rust & Apache Arrow C Data Interface ABI (rust_core)
 ```
 
-`estate-knowledge.js` consolidates all four LanceDB datasets and runs zero
+`estate-knowledge.js` consolidates all seven LanceDB datasets and runs zero
 external daemons. A reference LanceDB is added here as a new **domain** — never
 as a standalone MCP server. The `memory.query` action reaches any domain via its
-`domain` parameter (`vault`, `typescript`, `adobe`, `maxon`, `all`); default is
+`domain` parameter (`vault`, `typescript`, `adobe`, `maxon`, `openchamber`, `unreal`, `rust`, `all`); default is
 `vault`.
 
 Reference LanceDBs live under `~/Documents/GitHub/Lance Databases/`:
-`typescript_reference.lance`, `adobe_codex.lance`, `maxon_lancedb.lance`. The
+`typescript_reference.lance`, `adobe_codex.lance`, `maxon_lancedb.lance`,
+`openchamber.lance`, `unreal_engine.lance`, `rust_reference.lance`. The
 vault lives in `<data-dir>/stores/vault`. Paths are wired once in
 `server/index.js` (`createEstateKnowledgeEngine`).
 
@@ -47,6 +51,13 @@ Memory is not one store; it is three tiers with three loops behind the same door
    `Agents Vault/Artifacts` (the artefacts).
 3. **Reflection & Dream engine** (loops 2 and 3) — autonomous background
    reflection over the episodic log, and promotion to the vault.
+
+The loops are implemented in `../episodic-log/event-log.js` (loop 1) and
+`../compaction/reflection-engine.js` (loops 2 and 3). The salience,
+staleness, fade, and provenance policies behind them are specified in
+`../compaction/DOCUMENTATION.md`. The read-back side, freshness windows and
+char budgets that turn stored memory into prompt context, lives in
+`../recall/assembly.js`.
 
 Compaction reads the same memory store (`session-knowledge/`), so memory state
 interacts with compaction degradation — the reason memory must never be assumed

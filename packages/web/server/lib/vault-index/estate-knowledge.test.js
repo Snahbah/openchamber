@@ -7,6 +7,9 @@ describe('Unified Estate Knowledge Engine (LanceDB In-Process)', () => {
   const vaultDbPath = path.join(process.env.USERPROFILE, '.config', 'openchamber', 'stores', 'vault');
   const tsDbPath = path.join(baseLanceDir, 'typescript_reference.lance');
   const adobeDbPath = path.join(baseLanceDir, 'adobe_codex.lance');
+  const rustDbPath = path.join(baseLanceDir, 'rust_reference.lance');
+  const unrealDbPath = path.join(baseLanceDir, 'unreal_engine.lance');
+  const openchamberDbPath = path.join(baseLanceDir, 'openchamber.lance');
 
   test('rrf algorithm computes correct rank-fused order', () => {
     const listA = ['doc1', 'doc2', 'doc3'];
@@ -82,11 +85,65 @@ describe('Unified Estate Knowledge Engine (LanceDB In-Process)', () => {
     const engine = createEstateKnowledgeEngine({
       typescriptDbPath: tsDbPath,
       adobeDbPath: adobeDbPath,
+      rustDbPath: rustDbPath,
     });
 
-    const results = await engine.query('compiler batchPlay', { domain: 'all', limit: 2 });
+    const results = await engine.query('compiler batchPlay ArrowSchema', { domain: 'all', limit: 2 });
     expect(results.length).toBeGreaterThan(0);
     const domains = new Set(results.map((r) => r.domain));
     expect(domains.size).toBeGreaterThanOrEqual(1);
+  });
+
+  test('queries Rust reference domain via Tantivy FTS', async () => {
+    const engine = createEstateKnowledgeEngine({
+      rustDbPath,
+    });
+
+    const results = await engine.query('ArrowSchema', { domain: 'rust', limit: 3 });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].domain).toBe('rust');
+    expect(results[0].text).toContain('ArrowSchema');
+  });
+
+  test('queries Rust reference domain for panic safety & catch_unwind', async () => {
+    const engine = createEstateKnowledgeEngine({
+      rustDbPath,
+    });
+
+    const results = await engine.query('catch_unwind AssertUnwindSafe', { domain: 'rust', limit: 2 });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].domain).toBe('rust');
+    expect(results[0].subdomain).toBe('tokio_runtime');
+  });
+
+  test('queries OpenChamber domain via Tantivy FTS & metadata filtering', async () => {
+    const engine = createEstateKnowledgeEngine({
+      openchamberDbPath,
+    });
+
+    const results = await engine.query('estate knowledge in-process LanceDB', { domain: 'openchamber', limit: 3 });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].domain).toBe('openchamber');
+    expect(results[0].text).toContain('OpenChamber');
+  });
+
+  test('queries OpenChamber domain for pre-tool hooks & opencode adapter', async () => {
+    const engine = createEstateKnowledgeEngine({
+      openchamberDbPath,
+    });
+
+    const results = await engine.query('tool.execute.before', { domain: 'openchamber', limit: 3 });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].domain).toBe('openchamber');
+  });
+
+  test('queries Unreal Engine domain via Tantivy FTS', async () => {
+    const engine = createEstateKnowledgeEngine({
+      unrealDbPath,
+    });
+
+    const results = await engine.query('Nanite', { domain: 'unreal', limit: 3 });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].domain).toBe('unreal');
   });
 });
