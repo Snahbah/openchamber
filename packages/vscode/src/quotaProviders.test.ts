@@ -1794,4 +1794,20 @@ describe('Kimi for Coding credential lookup (VS Code parity)', () => {
     });
     assert.equal(authorization, 'Bearer legacy-key');
   });
+
+  test('shows the pay-as-you-go balance when the Kimi Code address refuses a platform key', async () => {
+    const urls: string[] = [];
+    const result = await fetchKimiQuota({
+      readAuth: () => ({ 'kimi-for-coding': { key: 'platform-key' } }),
+      fetchImpl: async (url) => {
+        urls.push(url);
+        return url === 'https://api.moonshot.ai/v1/users/me/balance'
+          ? Response.json({ data: { available_balance: 12.345 } })
+          : new Response('{}', { status: 401 });
+      },
+    });
+    assert.deepEqual(urls, ['https://api.kimi.com/coding/v1/usages', 'https://api.moonshot.ai/v1/users/me/balance']);
+    assert.equal(result.ok, true);
+    assert.equal(result.usage?.windows.credits_balance?.valueLabel, '$12.35');
+  });
 });

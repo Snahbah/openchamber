@@ -10,9 +10,10 @@ import {
   durationToSeconds,
   asNonEmptyString
 } from '../utils/index.js';
+import { fetchMoonshotBalance } from './moonshotai.js';
 
 export const providerId = 'kimi-for-coding';
-export const providerName = 'Kimi for Coding';
+export const providerName = 'Kimi';
 // OpenCode stores the Kimi For Coding plans as `kimi-code-plan-cn` (kimi.com)
 // and `kimi-code-plan-global` (kimi.ai). The China plan comes first: its key
 // works at the api.kimi.com usage address, and a pre-split `kimi-for-coding`
@@ -64,6 +65,20 @@ export const fetchQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl
     });
 
     if (!response.ok) {
+      // A pay-as-you-go Moonshot platform key (prepaid vouchers, no subscription)
+      // is refused by the Kimi Code usage address. Show its balance instead.
+      if (response.status === 401 || response.status === 403) {
+        const balance = await fetchMoonshotBalance(apiKey, { fetchImpl });
+        if (balance.windows) {
+          return buildResult({
+            providerId,
+            providerName,
+            ok: true,
+            configured: true,
+            usage: { windows: balance.windows }
+          });
+        }
+      }
       return buildResult({
         providerId,
         providerName,
