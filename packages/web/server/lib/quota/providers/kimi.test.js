@@ -125,6 +125,33 @@ describe('Kimi for Coding quota provider', () => {
     expect(result.usage.windows.credits_balance.valueLabel).toBe('$12.35');
   });
 
+  it('keeps the original 401 when the balance read fails too', async () => {
+    const urls = [];
+    const fetchImpl = async (url) => {
+      urls.push(url);
+      return new Response('{}', { status: 401 });
+    };
+
+    const result = await fetchQuota({ readAuth, fetchImpl });
+
+    expect(urls).toEqual(['https://api.kimi.com/coding/v1/usages', 'https://api.moonshot.ai/v1/users/me/balance']);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('API error: 401');
+  });
+
+  it('treats a 403 from the Kimi Code address like a 401', async () => {
+    const fetchImpl = async (url) => (
+      url === 'https://api.moonshot.ai/v1/users/me/balance'
+        ? Response.json({ data: { available_balance: 5 } })
+        : new Response('{}', { status: 403 })
+    );
+
+    const result = await fetchQuota({ readAuth, fetchImpl });
+
+    expect(result.ok).toBe(true);
+    expect(result.usage.windows.credits_balance.valueLabel).toBe('$5.00');
+  });
+
   it('does not try the balance address for errors other than authorisation', async () => {
     const urls = [];
     const fetchImpl = async (url) => {
