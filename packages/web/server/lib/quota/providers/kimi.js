@@ -35,7 +35,7 @@ const computeUsedPercent = (total, used, remaining) => {
   return null;
 };
 
-const getApiKey = (auth) => {
+export const getApiKey = (auth) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
 };

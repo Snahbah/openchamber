@@ -911,7 +911,11 @@ export const listConfiguredQuotaProviders = async () => {
   }
 
   const moonshotAuth = normalizeAuthEntry(getAuthEntry(auth, ['moonshotai']));
-  if (moonshotAuth && ((moonshotAuth as Record<string, unknown>).key || (moonshotAuth as Record<string, unknown>).token)) {
+  const moonshotKey = moonshotAuth
+    ? ((moonshotAuth as Record<string, unknown>).key || (moonshotAuth as Record<string, unknown>).token)
+    : undefined;
+  // Mirrors the web list: the Kimi card already shows this key's balance, so skip the duplicate.
+  if (moonshotKey && moonshotKey !== getKimiApiKey(auth)) {
     configured.add('moonshotai');
   }
 

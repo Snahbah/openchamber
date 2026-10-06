@@ -14,7 +14,7 @@ export const providerName = 'Moonshot AI';
 const aliases = ['moonshotai'];
 const MOONSHOT_BALANCE_URL = 'https://api.moonshot.ai/v1/users/me/balance';
 
-const getApiKey = (auth) => {
+export const getApiKey = (auth) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
 };
