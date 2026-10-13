@@ -23,6 +23,10 @@ export const toTimestamp = (value) => {
     return value < 1_000_000_000_000 ? value * 1000 : value;
   }
   if (typeof value === 'string') {
+    if (/^\d+$/.test(value.trim())) {
+      const num = Number(value.trim());
+      return num < 1_000_000_000_000 ? num * 1000 : num;
+    }
     const parsed = Date.parse(value);
     return Number.isNaN(parsed) ? null : parsed;
   }

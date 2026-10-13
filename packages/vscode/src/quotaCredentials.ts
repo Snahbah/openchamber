@@ -26,7 +26,22 @@ export const normalizeCredential = (provider: ManagedProvider, value: unknown): 
 
 export const readCredential = (provider: ManagedProvider) => {
   try { return normalizeCredential(provider, JSON.parse(fs.readFileSync(target(provider), 'utf8'))); }
-  catch (error) { if ((error as { code?: string }).code !== 'ENOENT') console.warn(`Failed to read ${provider} quota credentials`); return null; }
+  catch (error) { if ((error as { code?: string }).code !== 'ENOENT') console.warn(`Failed to read ${provider} quota credentials`); }
+  if (provider === 'cursor') {
+    try {
+      const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
+      if (fs.existsSync(authPath)) {
+        const authData = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+        const entry = authData?.cursor;
+        const accessToken = typeof entry?.access === 'string' ? entry.access.trim() : (typeof entry?.token === 'string' ? entry.token.trim() : '');
+        const refreshToken = typeof entry?.refresh === 'string' ? entry.refresh.trim() : '';
+        if (accessToken || refreshToken) {
+          return normalizeCredential('cursor', { accessToken, refreshToken });
+        }
+      }
+    } catch {}
+  }
+  return null;
 };
 export const credentialStatus = (provider: ManagedProvider) => {
   const value = readCredential(provider);

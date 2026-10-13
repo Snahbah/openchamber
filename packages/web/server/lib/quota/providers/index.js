@@ -188,8 +188,8 @@ const pendingFetches = new Map();
  * once and handed to every provider; when OpenCode cannot be asked this
  * throws, so a transient failure does not look like "nothing configured".
  */
-export const listConfiguredQuotaProviders = async () => {
-  const auth = await readOpenCodeCredentials();
+export const listConfiguredQuotaProviders = async ({ readAuth = readOpenCodeCredentials } = {}) => {
+  const auth = await readAuth();
   const configured = [];
 
   for (const [id, provider] of Object.entries(registry)) {
@@ -200,6 +200,13 @@ export const listConfiguredQuotaProviders = async () => {
     } catch {
       // Ignore provider-specific config errors in list API.
     }
+  }
+
+  // The Kimi card shows a Moonshot pay-as-you-go balance when its key is a platform key, so the
+  // same key under `moonshotai` would render a second card with the same number.
+  if (configured.includes('kimi-for-coding') && configured.includes('moonshotai')
+    && kimi.getApiKey(auth) === moonshotai.getApiKey(auth)) {
+    return configured.filter((id) => id !== 'moonshotai');
   }
 
   return configured;

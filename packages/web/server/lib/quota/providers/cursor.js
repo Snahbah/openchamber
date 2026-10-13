@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
@@ -8,7 +8,10 @@ import {
   formatMoney,
   toNumber,
   toTimestamp,
-  toUsageWindow
+  toUsageWindow,
+  getAuthEntry,
+  normalizeAuthEntry,
+  readJsonFile
 } from '../utils/index.js';
 
 const BASE_URL = 'https://api2.cursor.sh';
@@ -18,11 +21,17 @@ const CREDITS_URL = `${BASE_URL}/aiserver.v1.DashboardService/GetCreditGrantsBal
 const REFRESH_URL = `${BASE_URL}/oauth/token`;
 const CLIENT_ID = 'KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB';
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
-const STATE_DB = join(homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb');
+const STATE_DB_CANDIDATES = [
+  join(homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb'),
+  join(homedir(), 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage', 'state.vscdb'),
+  join(homedir(), '.config', 'Cursor', 'User', 'globalStorage', 'state.vscdb')
+];
+
+const getStateDbPath = () => STATE_DB_CANDIDATES.find((p) => existsSync(p)) || STATE_DB_CANDIDATES[0];
 
 export const providerId = 'cursor';
 export const providerName = 'Cursor';
-const aliases = ['cursor'];
+const aliases = ['cursor', 'cursor.oauth'];
 
 const readJwtPayload = (token) => {
   try {
@@ -35,12 +44,13 @@ const readJwtPayload = (token) => {
 };
 
 const readStateValue = (key) => {
-  if (!existsSync(STATE_DB)) return null;
+  const dbPath = getStateDbPath();
+  if (!existsSync(dbPath)) return null;
   try {
     const escapedKey = String(key).replace(/'/g, "''");
     const rows = execFileSync('sqlite3', [
       '-json',
-      STATE_DB,
+      dbPath,
       `SELECT value FROM ItemTable WHERE key = '${escapedKey}' LIMIT 1;`
     ], {
       encoding: 'utf8',
@@ -49,10 +59,21 @@ const readStateValue = (key) => {
     });
     const parsed = JSON.parse(rows || '[]');
     const value = parsed?.[0]?.value;
-    return typeof value === 'string' && value.trim() ? value.trim() : null;
-  } catch {
-    return null;
-  }
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  } catch {}
+
+  try {
+    const pythonCode = 'import sqlite3, sys; conn = sqlite3.connect(sys.argv[1]); c = conn.cursor(); c.execute("SELECT value FROM ItemTable WHERE key = ? LIMIT 1", (sys.argv[2],)); r = c.fetchone(); print(r[0] if r and r[0] else "")';
+    const res = execFileSync('python', ['-c', pythonCode, dbPath, String(key)], {
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const value = res?.trim();
+    if (value) return value;
+  } catch {}
+
+  return null;
 };
 
 const readFileToken = (path) => {
@@ -65,7 +86,21 @@ const readFileToken = (path) => {
   }
 };
 
-const loadAuthState = () => {
+const readOpenCodeAuth = () => {
+  try {
+    const authPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json');
+    const authData = readJsonFile(authPath);
+    const entry = authData?.cursor;
+    const accessToken = typeof entry?.access === 'string' ? entry.access.trim() : (typeof entry?.token === 'string' ? entry.token.trim() : null);
+    const refreshToken = typeof entry?.refresh === 'string' ? entry.refresh.trim() : null;
+    if (accessToken || refreshToken) {
+      return { accessToken, refreshToken, source: 'opencode' };
+    }
+  } catch {}
+  return null;
+};
+
+const loadAuthState = (auth) => {
   const envAccessToken = process.env.CURSOR_TOKEN || process.env.CURSOR_ACCESS_TOKEN || null;
   const envRefreshToken = process.env.CURSOR_REFRESH_TOKEN || null;
   const accessTokenPath = process.env.CURSOR_TOKEN_FILE || null;
@@ -90,10 +125,45 @@ const loadAuthState = () => {
   }
 
   const managed = readManagedCredential(providerId);
+  if (managed?.accessToken || managed?.refreshToken) {
+    return {
+      accessToken: managed?.accessToken || null,
+      refreshToken: managed?.refreshToken || null,
+      source: 'managed'
+    };
+  }
+
+  if (auth) {
+    const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
+    const token = entry?.access || entry?.token;
+    if (token || entry?.refresh) {
+      return {
+        accessToken: token || null,
+        refreshToken: entry?.refresh || null,
+        source: 'opencode'
+      };
+    }
+  }
+
+  const opencodeAuth = readOpenCodeAuth();
+  if (opencodeAuth) {
+    return opencodeAuth;
+  }
+
+  const stateAccessToken = readStateValue('cursorAuth/accessToken');
+  const stateRefreshToken = readStateValue('cursorAuth/refreshToken');
+  if (stateAccessToken || stateRefreshToken) {
+    return {
+      accessToken: stateAccessToken,
+      refreshToken: stateRefreshToken,
+      source: 'state_db'
+    };
+  }
+
   return {
-    accessToken: managed?.accessToken || null,
-    refreshToken: managed?.refreshToken || null,
-    source: 'managed'
+    accessToken: null,
+    refreshToken: null,
+    source: 'none'
   };
 };
 
@@ -105,18 +175,39 @@ const tokenNeedsRefresh = (token) => {
 };
 
 const persistAccessToken = (auth, accessToken) => {
-  if (auth.source === 'managed') writeManagedCredential(providerId, { accessToken, refreshToken: auth.refreshToken || '' });
+  if (auth.source === 'managed') {
+    writeManagedCredential(providerId, { accessToken, refreshToken: auth.refreshToken || '' });
+  } else if (auth.source === 'opencode') {
+    try {
+      const authPath = join(homedir(), '.local', 'share', 'opencode', 'auth.json');
+      if (existsSync(authPath)) {
+        const content = JSON.parse(readFileSync(authPath, 'utf8'));
+        if (content.cursor) {
+          content.cursor.access = accessToken;
+          writeFileSync(authPath, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
+        }
+      }
+    } catch {}
+  }
 };
 
 export const importCursorCredential = async () => {
-  const credential = {
-    accessToken: readStateValue('cursorAuth/accessToken') || '',
-    refreshToken: readStateValue('cursorAuth/refreshToken') || '',
-  };
+  let accessToken = readStateValue('cursorAuth/accessToken') || '';
+  let refreshToken = readStateValue('cursorAuth/refreshToken') || '';
+
+  if (!accessToken && !refreshToken) {
+    const opencodeAuth = readOpenCodeAuth();
+    if (opencodeAuth) {
+      accessToken = opencodeAuth.accessToken || '';
+      refreshToken = opencodeAuth.refreshToken || '';
+    }
+  }
+
+  const credential = { accessToken, refreshToken };
   if (!credential.accessToken && !credential.refreshToken) throw new Error('Cursor credentials are unavailable');
-  const accessToken = await resolveCredentialAccessToken({ ...credential, source: 'import' });
-  if (!accessToken) throw new Error('Cursor credentials are invalid');
-  return writeManagedCredential(providerId, { ...credential, accessToken });
+  const resolvedToken = await resolveCredentialAccessToken({ ...credential, source: 'import' });
+  if (!resolvedToken) throw new Error('Cursor credentials are invalid');
+  return writeManagedCredential(providerId, { ...credential, accessToken: resolvedToken });
 };
 
 const refreshAccessToken = async (auth) => {
@@ -256,9 +347,13 @@ const appendCreditsWindow = (windows, credits) => {
   });
 };
 
-export const isConfigured = () => {
-  const auth = loadAuthState();
-  return Boolean(auth.accessToken || auth.refreshToken);
+export const isConfigured = (auth) => {
+  if (auth) {
+    const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
+    if (entry?.access || entry?.token || entry?.refresh) return true;
+  }
+  const authState = loadAuthState(auth);
+  return Boolean(authState.accessToken || authState.refreshToken);
 };
 
 export const fetchQuota = async () => {
@@ -280,18 +375,27 @@ export const fetchQuota = async () => {
       connectPost(CREDITS_URL, accessToken).catch(() => null)
     ]);
 
-    if (usage?.enabled === false || !usage?.planUsage) {
-      return buildResult({
-        providerId,
-        providerName,
-        ok: false,
-        configured: true,
-        error: 'No active Cursor subscription'
-      });
-    }
-
-    const windows = buildWindows(usage, plan);
+    const windows = usage?.planUsage ? buildWindows(usage, plan) : {};
     appendCreditsWindow(windows, credits);
+
+    if (Object.keys(windows).length === 0) {
+      if (usage?.displayMessage) {
+        windows.status = toUsageWindow({
+          usedPercent: null,
+          windowSeconds: null,
+          resetAt: null,
+          valueLabel: usage.displayMessage
+        });
+      } else if (usage?.enabled === false) {
+        return buildResult({
+          providerId,
+          providerName,
+          ok: false,
+          configured: true,
+          error: 'No active Cursor subscription'
+        });
+      }
+    }
 
     return buildResult({
       providerId,

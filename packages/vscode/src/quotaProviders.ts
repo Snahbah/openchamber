@@ -414,6 +414,10 @@ const toTimestamp = (value: unknown): number | null => {
     return value < 1_000_000_000_000 ? value * 1000 : value;
   }
   if (typeof value === 'string') {
+    if (/^\d+$/.test(value.trim())) {
+      const num = Number(value.trim());
+      return num < 1_000_000_000_000 ? num * 1000 : num;
+    }
     const parsed = Date.parse(value);
     return Number.isNaN(parsed) ? null : parsed;
   }
@@ -911,7 +915,11 @@ export const listConfiguredQuotaProviders = async () => {
   }
 
   const moonshotAuth = normalizeAuthEntry(getAuthEntry(auth, ['moonshotai']));
-  if (moonshotAuth && ((moonshotAuth as Record<string, unknown>).key || (moonshotAuth as Record<string, unknown>).token)) {
+  const moonshotKey = moonshotAuth
+    ? ((moonshotAuth as Record<string, unknown>).key || (moonshotAuth as Record<string, unknown>).token)
+    : undefined;
+  // Mirrors the web list: the Kimi card already shows this key's balance, so skip the duplicate.
+  if (moonshotKey && moonshotKey !== getKimiApiKey(auth)) {
     configured.add('moonshotai');
   }
 
@@ -1804,7 +1812,7 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
   if (!apiKey) {
     return buildResult({
       providerId: 'kimi-for-coding',
-      providerName: 'Kimi for Coding',
+      providerName: 'Kimi',
       ok: false,
       configured: false,
       error: 'Not configured',
@@ -1821,9 +1829,23 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
     });
 
     if (!response.ok) {
+      // Mirrors the web provider: a pay-as-you-go Moonshot platform key is refused
+      // by the Kimi Code usage address, so show its balance instead.
+      if (response.status === 401 || response.status === 403) {
+        const balanceWindows = await fetchMoonshotBalanceWindows(apiKey, fetchImpl);
+        if (balanceWindows) {
+          return buildResult({
+            providerId: 'kimi-for-coding',
+            providerName: 'Kimi',
+            ok: true,
+            configured: true,
+            usage: { windows: balanceWindows },
+          });
+        }
+      }
       return buildResult({
         providerId: 'kimi-for-coding',
-        providerName: 'Kimi for Coding',
+        providerName: 'Kimi',
         ok: false,
         configured: true,
         error: `API error: ${response.status}`,
@@ -1865,7 +1887,7 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
 
     return buildResult({
       providerId: 'kimi-for-coding',
-      providerName: 'Kimi for Coding',
+      providerName: 'Kimi',
       ok: true,
       configured: true,
       usage: { windows },
@@ -1873,7 +1895,7 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
   } catch (error) {
     return buildResult({
       providerId: 'kimi-for-coding',
-      providerName: 'Kimi for Coding',
+      providerName: 'Kimi',
       ok: false,
       configured: true,
       error: error instanceof Error ? error.message : 'Request failed',
@@ -3305,6 +3327,33 @@ const MOONSHOT_BALANCE_URL = 'https://api.moonshot.ai/v1/users/me/balance';
 
 type MoonshotBalancePayload = {
   data?: { available_balance?: number };
+};
+
+// The balance windows for a Moonshot platform key, or null when they cannot be read.
+const fetchMoonshotBalanceWindows = async (
+  apiKey: string,
+  fetchImpl: (url: string, options: RequestInit) => Promise<Response>,
+): Promise<Record<string, UsageWindow> | null> => {
+  try {
+    const response = await fetchImpl(MOONSHOT_BALANCE_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return null;
+    const balance = (await response.json() as MoonshotBalancePayload)?.data?.available_balance;
+    if (typeof balance !== 'number' || !Number.isFinite(balance)) return null;
+    return {
+      credits_balance: toUsageWindow({
+        usedPercent: null,
+        windowSeconds: null,
+        resetAt: null,
+        valueLabel: `$${formatMoney(balance)}`,
+      }),
+    };
+  } catch {
+    return null;
+  }
 };
 
 // Mirrors packages/web/server/lib/quota/providers/moonshotai.js.
