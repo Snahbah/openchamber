@@ -33,6 +33,10 @@ const formatNote = (entry, scope) => [
   `scope: ${scope}`,
   `created: ${JSON.stringify(toIsoTimestamp(entry.createdAt))}`,
   'salience: promoted',
+  // Read-only projection of memory.json. The store is the source of truth; a
+  // hand-edit to this note diverges it from the store, and the next re-promotion
+  // overwrites the edit. `generated: true` is the machine-readable marker of that.
+  'generated: true',
   'tags:',
   `  - ${entry.type}`,
   `  - ${scope}`,

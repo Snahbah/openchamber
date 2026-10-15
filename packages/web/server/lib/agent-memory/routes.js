@@ -58,7 +58,7 @@ const resolveScope = (query) => {
 };
 
 export const registerAgentMemoryRoutes = (app, dependencies) => {
-  const { agentMemoryRuntime, isAgentMemoryEnabled } = dependencies;
+  const { agentMemoryRuntime, indexQueue, isAgentMemoryEnabled } = dependencies;
 
   /**
    * One gate for the whole surface. The settings toggle disables the feature,
@@ -144,6 +144,10 @@ export const registerAgentMemoryRoutes = (app, dependencies) => {
       if (!result) {
         return res.status(404).json({ error: 'Memory not found' });
       }
+      // Mirror the edit into the semantic index off the hot path. The JSON write
+      // above is the source of truth and has already succeeded; this enqueue is
+      // non-blocking and must never fail the response.
+      if (indexQueue?.enqueue) indexQueue.enqueue(result.entry, target.scope);
       return res.json(result);
     } catch (caught) {
       return respondWithError(res, caught, 'Failed to save memory');

@@ -126,6 +126,7 @@ import { createProjectContextRuntime } from './lib/project-context/runtime.js';
 import { createAgentMemoryRuntime } from './lib/agent-memory/runtime.js';
 import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
 import { createVaultPromotionRuntime } from './lib/agent-memory/vault-promotion.js';
+import { createIndexQueue } from './lib/agent-memory/index-queue.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
 import { isAgentMemoryFeatureAvailable } from './lib/agent-memory/feature-flag.js';
 import { createSpacesHost } from './lib/spaces/host.js';
@@ -648,6 +649,36 @@ const vaultIndexRuntime = createVaultIndexRuntime({
   vocabPath: path.join(embedderDir, 'vocab.txt'),
 });
 
+// Index-on-write: mirrors each agent-memory write into the vault semantic index
+// off the hot path, so the prompt block can rank by relevance instead of reading
+// the flat title list. Bounded, with a background drain, backoff and counters.
+const indexQueue = createIndexQueue({
+  promote: (entry, scope) => vaultPromotionRuntime.promote(entry, scope),
+  syncFile: (notePath) => vaultIndexRuntime.syncFile(notePath),
+  logger: { warn: (message, payload) => console.warn(`[memory-index] ${message}`, payload) },
+});
+
+// Self-healing backfill: on boot, re-promote global memory so the vault index is
+// not empty for entries saved before indexing existed. Idempotent by design —
+// re-promotion overwrites the same note — so re-running it on every boot both
+// backfills and repairs any note that was edited or deleted out from under it.
+// NOTE: this means a note deleted from the vault ON PURPOSE comes back on the next
+// boot, because memory.json is authoritative (read-only projection, Option 1). That
+// is intended: to remove a memory, delete the memory entry, not its projected note.
+// Project memory backfills fill-as-you-go: a project's entries are indexed on
+// their next write, since enumerating every project at boot is not worth the
+// scan when the common case is one or two active projects.
+void (async () => {
+  try {
+    const { global } = await agentMemoryRuntime.readAll(null);
+    for (const entry of global) {
+      indexQueue.enqueue(entry, 'global');
+    }
+  } catch (error) {
+    console.warn('[memory-index] backfill skipped:', error?.message || error);
+  }
+})();
+
 // Unified Estate Knowledge Engine (Zero-daemon LanceDB in-process service)
 const baseLanceDir = path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Documents', 'GitHub', 'Lance Databases');
 const estateKnowledgeEngine = createEstateKnowledgeEngine({
@@ -1046,6 +1077,22 @@ const sessionGoalRuntime = createSessionGoalRuntime({
 const sessionKnowledgeRuntime = createSessionKnowledgeRuntime({
   projectContextRuntime,
   agentMemoryRuntime,
+  // Relevance ranking: query the vault for memory-kind notes, keyed by memory id.
+  // Lower rank = more relevant; entries absent from the map fall to recency order.
+  queryMemory: async (text) => {
+    const results = await estateKnowledgeEngine.queryVault(text, 200);
+    const rank = new Map();
+    let index = 0;
+    for (const result of results) {
+      const meta = result.metadata || {};
+      const isMemoryKind = meta.type === 'fact' || meta.type === 'preference' || meta.type === 'reference';
+      if (isMemoryKind && meta.id && !rank.has(meta.id)) {
+        rank.set(meta.id, index);
+        index += 1;
+      }
+    }
+    return rank;
+  },
   // Called, not captured: the resolver is declared further down, and taking a
   // reference here would read it before it exists.
   resolveProjectId: (directory) => resolveMemoryProjectId(directory),
@@ -1783,6 +1830,7 @@ const openChamberControlService = createOpenChamberControlService({
     agentMemoryRuntime,
     vaultPromotion: vaultPromotionRuntime,
     vaultIndexRuntime,
+    indexQueue,
     estateKnowledgeEngine,
     createError: (message, status) => new OpenChamberControlError(message, status),
     onMemoryChanged: emitAgentMemoryChangedEvent,
@@ -2649,6 +2697,7 @@ async function main(options = {}) {
     projectConfigRuntime,
     projectContextRuntime,
     agentMemoryRuntime,
+    indexQueue,
     isAgentMemoryEnabled,
     sessionKnowledgeRuntime,
     scheduledTasksRuntime,

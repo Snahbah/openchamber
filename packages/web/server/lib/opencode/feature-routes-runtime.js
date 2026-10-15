@@ -137,6 +137,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       projectConfigRuntime,
       projectContextRuntime,
       agentMemoryRuntime,
+      indexQueue,
       isAgentMemoryEnabled,
       sessionKnowledgeRuntime,
       scheduledTasksRuntime,
@@ -364,7 +365,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       persistSettings,
     });
     registerProjectSetupRoutes(app, { projectConfigRuntime });
-    registerAgentMemoryRoutes(app, { agentMemoryRuntime, isAgentMemoryEnabled });
+    registerAgentMemoryRoutes(app, { agentMemoryRuntime, indexQueue, isAgentMemoryEnabled });
     registerSessionKnowledgeRoutes(app, { sessionKnowledgeRuntime });
     registerMessageSearchRoutes(app, { messageSearchRuntime });
 
