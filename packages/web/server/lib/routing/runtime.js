@@ -36,6 +36,17 @@ const PERMISSION_DECISION_TTL_MS = 15 * 60 * 1000;
 
 const errorMessage = (error) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * A classifier error that means "out of quota" — refuse the turn rather than
+ * fall through to the fallback model and spend anyway. Transient errors
+ * (timeout, 5xx) still fall back; a spent quota must not spend more.
+ */
+const isQuotaExhausted = (error) => {
+  const status = Number(error?.status);
+  if (status === 429 || status === 402) return true;
+  return /quota|rate[- ]?limit|insufficient|out of (credits?|balance|quota|funds)|too many requests|billing|payment required/i.test(errorMessage(error));
+};
+
 // v2's command body (`session.command` in the protocol) names the command in
 // `name` and carries its arguments in `text`; a prompt body has no `name`.
 const commandBodySchema = z.object({ name: z.string().trim().min(1), text: z.string().nullish() });
@@ -169,6 +180,29 @@ export function createRoutingRuntime({
   // the client resend the sentinel with every send.
   const autoSessions = new Map();
   const AUTO_SESSION_LIMIT = 1000;
+
+  // Fallback telemetry: every time routing falls back to config.fallback.model
+  // (a classifier error or a low-confidence/unknown category), the event is
+  // logged with from/to/reason and counted here, exposed on /health.
+  const fallbacks = { total: 0, byReason: {} };
+  const recordFallback = ({ from, to, reason, sessionId }) => {
+    fallbacks.total += 1;
+    const key = reason || 'unknown';
+    fallbacks.byReason[key] = (fallbacks.byReason[key] ?? 0) + 1;
+    console.warn(JSON.stringify({
+      event: 'routing.fallback',
+      from,
+      to,
+      reason,
+      sessionId,
+      timestamp: new Date(now()).toISOString(),
+    }));
+  };
+  const fallbackStats = () => ({
+    fallbacks_total: fallbacks.total,
+    fallbacks_by_reason: fallbacks.byReason,
+  });
+  const fallbackTarget = (config) => `${config.fallback.model.providerID}/${config.fallback.model.modelID}`;
 
   const broadcast = (type, properties) => {
     try {
@@ -377,6 +411,11 @@ export function createRoutingRuntime({
         decision.confidence = result.confidence;
         decision.reason = result.reason;
         decision.ms = ms;
+        if (result.category === null) {
+          // Low-confidence or unknown category still falls back to the fallback
+          // model. Count and log it like the error path.
+          recordFallback({ from: null, to: fallbackTarget(config), reason: result.reason, sessionId });
+        }
         const held = await cacheHold({ config, chosen: result.category, composerAgent: agent, lastAnswer, directory });
         if (held) {
           // The send runs as the category the session is already on;
@@ -386,9 +425,19 @@ export function createRoutingRuntime({
         }
         selection = chooseSelection(config, held ?? result.category, agent);
       } catch (error) {
+        if (isQuotaExhausted(error)) {
+          // Out of quota is not a transient failure: falling back to a (possibly
+          // premium) fallback model would spend while the classifier is spent.
+          // Refuse the turn instead of routing.
+          throw Object.assign(
+            new Error(`Classification provider is out of quota: ${errorMessage(error)}`),
+            { status: 429, code: 'quota-exhausted' },
+          );
+        }
         decision.reason = 'error';
         decision.error = errorMessage(error);
         selection = chooseSelection(config, null, agent);
+        recordFallback({ from: null, to: fallbackTarget(config), reason: `error: ${errorMessage(error)}`, sessionId });
       }
     } else {
       selection = chooseSelection(config, null, agent);
@@ -627,5 +676,6 @@ export function createRoutingRuntime({
     setCustomEndpoint,
     clearCustomEndpoint,
     testClassifier,
+    fallbackStats,
   };
 }
