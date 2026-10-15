@@ -40,6 +40,9 @@ export const buildKnowledgeSignature = ({ notes, plans, memory, linking = false 
     // Memory being on is itself worth telling a session: without it an empty
     // store sends nothing, and an agent never told when to save never does.
     ...(memory.enabled ? [`m:on:${memory.complete ? 'c' : 'p'}`] : []),
+    // Learnings ride the signature so a newly-distilled lesson re-sends the block,
+    // and an empty learnings list keeps the signature empty (nothing to tell).
+    ...(Array.isArray(memory.learnings) ? memory.learnings.map((learning) => `sl:${learning.summary}`) : []),
     ...(linking ? ['l:on'] : []),
   ];
   return parts.length === 0 ? '' : parts.sort().join('|');
@@ -190,15 +193,37 @@ const buildPinnedBlock = ({ notes, plans }) => {
   ].join('\n\n');
 };
 
+/**
+ * Session learnings, surfaced distinctly from facts and preferences (PRD-07 §3.3).
+ *
+ * A learning is a distilled, cost-tagged lesson a future session should read AS a
+ * lesson — "we burned an hour re-deriving X" is not the same kind of thing as "the
+ * pool caps at ten". `cost` is carried so high-cost lessons are visible at a
+ * glance; an unverified learning is marked, never silently dropped.
+ */
+const buildLearningsBlock = (learnings) => {
+  if (!Array.isArray(learnings) || learnings.length === 0) return '';
+  const lines = learnings.map((learning) => {
+    const cost = learning.cost ? ` [cost: ${learning.cost}]` : '';
+    const mark = learning.verified === false ? ' [unverified]' : '';
+    return `- ${learning.summary}${cost}${mark}`;
+  });
+  return `[recall — session_learning]\n${lines.join('\n')}`;
+};
+
 export const buildKnowledgeText = ({ notes, plans, memory, linking = false }) => {
   const pinned = buildPinnedBlock({ notes, plans });
   const link = linking ? SESSION_LINK_GUIDANCE : '';
-  // Pins and the link rule are standing instructions and keep their room; the
-  // memory titles are the elastic part and take what is left.
-  const memoryBudget = KNOWLEDGE_MAX_LENGTH - pinned.length - link.length - 4;
+  // Session learnings are standing context, not memory titles: they keep a fixed
+  // allowance so a few costly lessons are never crowded out by facts.
+  const learningsBlock = buildLearningsBlock(memory.learnings);
+  // Pins, the link rule and learnings keep their room; the memory titles are the
+  // elastic part and take what is left.
+  const memoryBudget = KNOWLEDGE_MAX_LENGTH - pinned.length - link.length - learningsBlock.length - 4;
   const blocks = [
     pinned,
     buildMemoryBlock({ ...memory, budget: memoryBudget }),
+    learningsBlock,
     link,
   ].filter(Boolean);
   if (blocks.length === 0) return '';
@@ -230,7 +255,15 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
   // back to recency. `vault_hits` + `vault_misses` say whether the vault path is
   // live; `fallback_reason` says why it missed. Zero misses = safety net; nonzero
   // = the read path is quietly doing something else.
-  const counters = { vault_hits: 0, vault_misses: 0, fallback_reason: null };
+  const counters = {
+    vault_hits: 0,
+    vault_misses: 0,
+    fallback_reason: null,
+    // Distinct from vault_misses: 0 here means "no session_learning records yet"
+    // (Phase 2 has not run), NOT "the vault query failed". Kept separate so a
+    // pre-Phase-2 zero cannot be read as a broken read path.
+    learnings_found: 0,
+  };
   const stats = () => ({ ...counters });
 
   const requireMetadataStore = () => {
@@ -316,11 +349,15 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     // block — it falls through to the recency order and is counted, so a broken
     // index is observable rather than a silent memory outage.
     let ranking = null;
+    let learnings = [];
     const q = (query || '').trim();
     if (q && typeof queryMemory === 'function') {
       try {
-        ranking = await queryMemory(q);
+        const result = await queryMemory(q);
+        ranking = result.ranking;
+        learnings = Array.isArray(result.learnings) ? result.learnings : [];
         counters.vault_hits += 1;
+        counters.learnings_found = learnings.length;
         counters.fallback_reason = null;
       } catch (error) {
         counters.vault_misses += 1;
@@ -328,7 +365,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
       }
     }
 
-    return { notes, plans, memory: { ...memory, ranking }, linking };
+    return { notes, plans, memory: { ...memory, ranking, learnings }, linking };
   };
 
   /**

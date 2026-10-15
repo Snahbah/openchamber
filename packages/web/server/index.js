@@ -1081,17 +1081,26 @@ const sessionKnowledgeRuntime = createSessionKnowledgeRuntime({
   // Lower rank = more relevant; entries absent from the map fall to recency order.
   queryMemory: async (text) => {
     const results = await estateKnowledgeEngine.queryVault(text, 200);
-    const rank = new Map();
+    const ranking = new Map();
+    const learnings = [];
     let index = 0;
     for (const result of results) {
       const meta = result.metadata || {};
-      const isMemoryKind = meta.type === 'fact' || meta.type === 'preference' || meta.type === 'reference';
-      if (isMemoryKind && meta.id && !rank.has(meta.id)) {
-        rank.set(meta.id, index);
-        index += 1;
+      if (meta.type === 'session_learning') {
+        // Session learnings (Phase 2) surface as a distinct block, not as facts.
+        learnings.push({
+          summary: typeof meta.summary === 'string' ? meta.summary : (result.text || '').trim(),
+          cost: typeof meta.cost === 'string' ? meta.cost : null,
+          verified: meta.verified === true,
+        });
+      } else if (meta.type === 'fact' || meta.type === 'preference' || meta.type === 'reference') {
+        if (meta.id && !ranking.has(meta.id)) {
+          ranking.set(meta.id, index);
+          index += 1;
+        }
       }
     }
-    return rank;
+    return { ranking, learnings };
   },
   // Called, not captured: the resolver is declared further down, and taking a
   // reference here would read it before it exists.
