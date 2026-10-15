@@ -209,6 +209,23 @@ describe('session goal tick on v2 messages', () => {
     runtime.stop();
   });
 
+  it('halts a goal with no budget of its own at the conservative default budget', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { calls } = v2OpenCode({
+      messages: [assistantRecord({ tokens: { input: 200_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } })],
+    });
+    const seam = wired({ openchamber: { goal: activeGoal() } }); // no tokenBudget on the goal
+    const generate = vi.fn();
+    const { runtime } = makeRuntime({ ...seam, getSmallModelService: async () => ({ generateSmallModelText: generate }) });
+
+    await runTick(runtime);
+
+    expect(seam.persistSessionGoal.mock.calls.at(-1)[2]).toMatchObject({ status: 'budgetLimited', statusReason: 'token budget reached' });
+    expect(calls.some((call) => call.method === 'POST')).toBe(false);
+    runtime.stop();
+  });
+
   it('falls back to 20 turns for a missing or out-of-range setting', () => {
     expect([undefined, 0, -5, 2.5, '50', 201].map(normalizeMaxAutoTurns)).toEqual([20, 20, 20, 20, 20, 20]);
     expect([1, 50, 200].map(normalizeMaxAutoTurns)).toEqual([1, 50, 200]);

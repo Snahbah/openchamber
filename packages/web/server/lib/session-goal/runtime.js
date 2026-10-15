@@ -67,6 +67,12 @@ const REASON_CHAR_LIMIT = 200;
 // sets it in Settings within these bounds.
 const DEFAULT_MAX_AUTO_TURNS = 20;
 const MAX_AUTO_TURNS_LIMIT = 200;
+// Every goal carries a token budget. A goal created without one is bounded by
+// this conservative default, so a goal can never outspend it through turns,
+// compactions, or a dead checker. The budget is a hard stop: once crossed the
+// goal settles as `budgetLimited`, and compaction does not reset it (accounting
+// is segmented across compactions, see the tick below).
+const DEFAULT_GOAL_TOKEN_BUDGET = 200_000;
 
 /** The saved cap, or the default when it is missing or out of bounds. */
 export const normalizeMaxAutoTurns = (value) => (
@@ -705,6 +711,12 @@ export const createSessionGoalRuntime = ({
 
     const assistantText = messagePartsToText(lastAssistant);
 
+    // The goal's budget is mandatory: a goal without one is bounded by the
+    // conservative default rather than being allowed to spend without limit.
+    const tokenBudget = typeof goal.tokenBudget === 'number' && goal.tokenBudget > 0
+      ? goal.tokenBudget
+      : DEFAULT_GOAL_TOKEN_BUDGET;
+
     // --- Terminal conditions, cheapest first ---
 
     // A user abort means "stop working" — pause the goal instead of blocking
@@ -741,12 +753,22 @@ export const createSessionGoalRuntime = ({
       return;
     }
 
-    // Token budget crossed → budgetLimited.
-    if (typeof goal.tokenBudget === 'number' && tokensUsed >= goal.tokenBudget) {
+    // Token budget crossed → budgetLimited. A goal without a budget of its own
+    // is still stopped by the conservative default — the budget is a hard cap,
+    // not opt-in.
+    if (tokensUsed >= tokenBudget) {
       await settleGoal({
         sessionId, directory, goal, status: 'budgetLimited', statusReason: 'token budget reached', tokensUsed, tokensBaseline, tokensCommitted, lastAccountedMessageID,
       });
       return;
+    }
+
+    // Warn the operator as the budget is consumed, so a goal approaching its
+    // cap is visible before it hard-stops. 50% and 90% are the checkpoints.
+    if (tokensUsed >= tokenBudget * 0.9) {
+      console.warn(`[session-goal] ${sessionId} used ${Math.round((tokensUsed / tokenBudget) * 100)}% of its token budget (${tokensUsed}/${tokenBudget})`);
+    } else if (tokensUsed >= tokenBudget * 0.5) {
+      console.warn(`[session-goal] ${sessionId} used ${Math.round((tokensUsed / tokenBudget) * 100)}% of its token budget (${tokensUsed}/${tokenBudget})`);
     }
 
     // Auto-continuation safety cap → blocked.
@@ -842,8 +864,8 @@ export const createSessionGoalRuntime = ({
       return;
     }
 
-    console.log(`[session-goal] continuing ${sessionId} (turn ${written.turnsUsed}/${maxAutoTurns}, tokens ${written.tokensUsed}${written.tokenBudget ? `/${written.tokenBudget}` : ''})`);
-    await sendContinuation({ sessionId, directory, goal: { ...written, objective: effectiveObjective }, maxAutoTurns });
+    console.log(`[session-goal] continuing ${sessionId} (turn ${written.turnsUsed}/${maxAutoTurns}, tokens ${written.tokensUsed}/${tokenBudget})`);
+    await sendContinuation({ sessionId, directory, goal: { ...written, objective: effectiveObjective, tokenBudget }, maxAutoTurns });
   };
 
   const armTimer = (sessionId, directory, quietMs) => {
