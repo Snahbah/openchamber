@@ -682,16 +682,18 @@ export const createSessionGoalRuntime = ({
       sawNewMessages = true;
       const total = messageTokenTotal(info);
       if (info.summary === true) {
-        // The summary message's own tokens are ZEROED by opencode — never
-        // feed them into the closing value. Close the segment from what is
-        // already known, with the previously displayed total as a continuity
-        // floor (the latest pre-summary snapshot was already folded into
-        // tokensUsed on earlier ticks); otherwise the counter freezes at the
-        // pre-compaction value until the new context outgrows it. Known
-        // undercount: the summarization call itself is reported as 0 tokens.
+        // The summarisation call reads the whole context and writes the
+        // summary, so its own tokens are part of the goal's spend, not free.
+        // opencode under-reports them (often zero); when it does report them,
+        // they must be counted rather than dropped, so the budget does not
+        // undercount the compaction. Close the segment from what is already
+        // known, with the previously displayed total as a continuity floor
+        // (the latest pre-summary snapshot was already folded into tokensUsed
+        // on earlier ticks); otherwise the counter freezes at the
+        // pre-compaction value until the new context outgrows it.
         tokensCommitted = Math.max(
           goal.tokensUsed,
-          tokensCommitted + Math.max(0, (segmentSnapshot ?? 0) - tokensBaseline),
+          tokensCommitted + Math.max(0, (segmentSnapshot ?? 0) - tokensBaseline) + total,
         );
         tokensBaseline = 0;
         segmentSnapshot = null;

@@ -315,6 +315,27 @@ describe('session goal tick on v2 messages', () => {
     runtime.stop();
   });
 
+  it('counts a compaction summary that reports its own tokens, so the budget does not undercount it', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    v2OpenCode({
+      messages: [
+        assistantRecord(),
+        { id: 'msg_c1', sessionID: SESSION_ID, type: 'compaction', status: 'completed', summary: 'Summary so far', tokens: { input: 500, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: 30 } },
+        assistantRecord({ id: 'msg_d1', tokens: { input: 30, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: 40, completed: 50 } }),
+      ],
+    });
+    const seam = wired({ openchamber: { goal: activeGoal() } });
+    const { runtime } = makeRuntime(seam);
+
+    await runTick(runtime);
+
+    // 170 from the turn before the compaction, 600 for the compaction call
+    // itself (no longer dropped), 50 from the turn after it.
+    expect(seam.persistSessionGoal.mock.calls.at(-1)[2]).toMatchObject({ tokensUsed: 820 });
+    runtime.stop();
+  });
+
   it('waits when the session is still running or the user just sent a message', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const generate = vi.fn();
