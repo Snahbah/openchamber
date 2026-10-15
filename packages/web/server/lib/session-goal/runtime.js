@@ -181,7 +181,7 @@ const parseGoalMetadata = (session) => {
     objective: objective.slice(0, GOAL_OBJECTIVE_CHAR_LIMIT),
     objectiveFile,
     status,
-    tokenBudget: Number.isFinite(goal.tokenBudget) && goal.tokenBudget > 0 ? Math.floor(goal.tokenBudget) : null,
+    tokenBudget: Number.isFinite(goal.tokenBudget) && goal.tokenBudget > 0 ? Math.floor(goal.tokenBudget) : 200_000,
     tokensUsed: Number.isFinite(goal.tokensUsed) && goal.tokensUsed > 0 ? Math.floor(goal.tokensUsed) : 0,
     tokensBaseline: Number.isFinite(goal.tokensBaseline) && goal.tokensBaseline > 0 ? Math.floor(goal.tokensBaseline) : 0,
     tokensCommitted: Number.isFinite(goal.tokensCommitted) && goal.tokensCommitted > 0 ? Math.floor(goal.tokensCommitted) : 0,
@@ -355,6 +355,8 @@ export const createSessionGoalRuntime = ({
   getMaxAutoTurns = () => readGoalSettings().maxAutoTurns,
   persistSessionGoal = null,
   readSessionMetadata = null,
+  /** Lists sessions whose goal is currently `active`: `[{ sessionId, directory, goal }]`. */
+  listActiveGoalSessions = null,
 }) => {
   const timers = new Map();
   const inflight = new Set();
@@ -675,16 +677,15 @@ export const createSessionGoalRuntime = ({
       sawNewMessages = true;
       const total = messageTokenTotal(info);
       if (info.summary === true) {
-        // The summary message's own tokens are ZEROED by opencode — never
-        // feed them into the closing value. Close the segment from what is
-        // already known, with the previously displayed total as a continuity
-        // floor (the latest pre-summary snapshot was already folded into
-        // tokensUsed on earlier ticks); otherwise the counter freezes at the
-        // pre-compaction value until the new context outgrows it. Known
-        // undercount: the summarization call itself is reported as 0 tokens.
+        // The summarisation call reads the whole context and writes the
+        // summary, so it costs tokens even though opencode reports the summary
+        // message as 0 tokens. Estimate its output from the summary text so the
+        // compaction is charged to the budget instead of free, while the
+        // segment close (segmentSnapshot − baseline) prices the context it read.
+        const summaryCost = Math.max(total, Math.ceil(messagePartsToText(message).length / 4));
         tokensCommitted = Math.max(
           goal.tokensUsed,
-          tokensCommitted + Math.max(0, (segmentSnapshot ?? 0) - tokensBaseline),
+          tokensCommitted + Math.max(0, (segmentSnapshot ?? 0) - tokensBaseline) + summaryCost,
         );
         tokensBaseline = 0;
         segmentSnapshot = null;
@@ -770,13 +771,15 @@ export const createSessionGoalRuntime = ({
     // stops above (turn error, budget, continuation cap). The working agent
     // has no channel to settle its own goal.
     //
-    // Exception: when the latest message is a compaction summary or was cut off
-    // by the output token limit (length stop), the agent by definition ran into
-    // the context/output limit mid-work — that IS "in progress, not finished".
-    // No check; continue unconditionally.
+    // A turn cut off by the output token limit (length stop), or a resume over
+    // an aborted tail, is by definition "in progress, not finished" — there is
+    // nothing meaningful to audit, so it continues. A compaction summary is
+    // NOT skipped: it is the agent's latest statement of what is done and what
+    // remains, so it must count as a turn against the budget and the
+    // auto-continuation cap rather than continue past them blindly.
     let audit = null;
     let auditFailStreak = goal.auditFailStreak;
-    if (!(lastAssistantInfo.summary === true || abortedTail || lengthTail)) {
+    if (!(abortedTail || lengthTail)) {
       audit = await runAudit({ goal: { ...goal, objective: effectiveObjective }, assistantText, directory, lastAssistantInfo: executionInfo ?? lastAssistantInfo });
 
       // No check could run: tolerate one consecutive failure (transient
@@ -841,6 +844,12 @@ export const createSessionGoalRuntime = ({
       return;
     }
 
+    // The kill switch may have tripped while this tick was in flight (audit,
+    // metadata write). Do not send the continuation.
+    if (stopped) {
+      console.log(`[session-goal] ${sessionId} stopped by kill switch, dropping continuation`);
+      return;
+    }
     console.log(`[session-goal] continuing ${sessionId} (turn ${written.turnsUsed}/${maxAutoTurns}, tokens ${written.tokensUsed}${written.tokenBudget ? `/${written.tokenBudget}` : ''})`);
     await sendContinuation({ sessionId, directory, goal: { ...written, objective: effectiveObjective }, maxAutoTurns });
   };
@@ -971,5 +980,34 @@ export const createSessionGoalRuntime = ({
     timers.clear();
   };
 
-  return { processPayload, notifyGoalChanged, stop };
+  /**
+   * Kill switch: freeze the loop (no new timers, in-flight ticks bail before
+   * their continuation) and clear every active goal from the metadata so a
+   * restart cannot silently resume it. Returns how many goals were paused.
+   */
+  const stopAllGoals = async () => {
+    stop();
+    if (typeof listActiveGoalSessions !== 'function') return { frozen: true, stopped: 0 };
+    let sessions;
+    try {
+      sessions = await listActiveGoalSessions();
+    } catch (error) {
+      console.warn('[session-goal] kill switch could not list goals:', error?.message ?? error);
+      return { frozen: true, stopped: 0 };
+    }
+    let stoppedCount = 0;
+    for (const entry of sessions ?? []) {
+      const sessionId = entry?.sessionId;
+      const goal = entry?.goal;
+      if (!sessionId || !goal?.id) continue;
+      const written = await writeGoal(sessionId, entry.directory ?? '', goal.id, () => ({
+        status: 'paused',
+        statusReason: 'stopped by kill switch',
+      }));
+      if (written) stoppedCount += 1;
+    }
+    return { frozen: true, stopped: stoppedCount };
+  };
+
+  return { processPayload, notifyGoalChanged, stop, stopAllGoals };
 };
