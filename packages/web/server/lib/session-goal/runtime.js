@@ -793,13 +793,16 @@ export const createSessionGoalRuntime = ({
     // stops above (turn error, budget, continuation cap). The working agent
     // has no channel to settle its own goal.
     //
-    // Exception: when the latest message is a compaction summary or was cut off
-    // by the output token limit (length stop), the agent by definition ran into
-    // the context/output limit mid-work — that IS "in progress, not finished".
-    // No check; continue unconditionally.
+    // A turn cut off by the output token limit (length stop), or a resume over
+    // an aborted tail, is by definition "in progress, not finished" — there is
+    // nothing meaningful to audit, so it continues. A compaction summary is
+    // NOT skipped: it is the agent's latest statement of what is done and what
+    // remains, so it must be audited rather than continued past blindly — a
+    // dead checker then trips the audit-fail limit instead of driving the loop
+    // through compaction after compaction up to the turn cap.
     let audit = null;
     let auditFailStreak = goal.auditFailStreak;
-    if (!(lastAssistantInfo.summary === true || abortedTail || lengthTail)) {
+    if (!(abortedTail || lengthTail)) {
       audit = await runAudit({ goal: { ...goal, objective: effectiveObjective }, assistantText, directory, lastAssistantInfo: executionInfo ?? lastAssistantInfo });
 
       // No check could run: tolerate one consecutive failure (transient

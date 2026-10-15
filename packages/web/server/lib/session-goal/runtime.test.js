@@ -250,8 +250,9 @@ describe('session goal tick on v2 messages', () => {
     runtime.stop();
   });
 
-  it('treats a finished compaction as a summary turn: no audit, continuation sent', async () => {
+  it('audits a finished compaction summary instead of skipping it', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { calls } = v2OpenCode({
       messages: [
         assistantRecord(),
@@ -264,8 +265,33 @@ describe('session goal tick on v2 messages', () => {
 
     await runTick(runtime);
 
-    expect(generate).not.toHaveBeenCalled();
+    // The summary is audited (the checker was consulted), and because it could
+    // not answer, one unchecked continuation is tolerated — no blind skip.
+    expect(generate).toHaveBeenCalledTimes(1);
     expect(calls.some((call) => call.path.endsWith('/prompt') && call.method === 'POST')).toBe(true);
+    runtime.stop();
+  });
+
+  it('halts a compaction summary that reports all work done, instead of continuing unconditionally', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { calls } = v2OpenCode({
+      messages: [
+        assistantRecord(),
+        { id: 'msg_c1', sessionID: SESSION_ID, type: 'compaction', status: 'completed', summary: 'All requested work is done', time: { created: 30 } },
+      ],
+    });
+    const seam = wired({ openchamber: { goal: activeGoal() } });
+    const { runtime } = makeRuntime({
+      ...seam,
+      getSmallModelService: async () => ({
+        generateSmallModelText: async () => ({ text: smallModelSays({ all_done: true }) }),
+      }),
+    });
+
+    await runTick(runtime);
+
+    expect(seam.persistSessionGoal.mock.calls.at(-1)[2]).toMatchObject({ status: 'complete' });
+    expect(calls.some((call) => call.method === 'POST')).toBe(false);
     runtime.stop();
   });
 
