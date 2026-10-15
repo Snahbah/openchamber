@@ -42,6 +42,9 @@ export const buildKnowledgeSignature = ({ notes, plans, memory, linking = false,
     // Memory being on is itself worth telling a session: without it an empty
     // store sends nothing, and an agent never told when to save never does.
     ...(memory.enabled ? [`m:on:${memory.complete ? 'c' : 'p'}`] : []),
+    // Learnings ride the signature so a newly-distilled lesson re-sends the block,
+    // and an empty learnings list keeps the signature empty (nothing to tell).
+    ...(Array.isArray(memory.learnings) ? memory.learnings.map((learning) => `sl:${learning.summary}`) : []),
     ...(linking ? ['l:on'] : []),
     // Flipping the setting changes the rule, so the session hears it again.
     ...WORKTREE_MOVE_SIGNATURE[worktreeMove],
@@ -49,11 +52,49 @@ export const buildKnowledgeSignature = ({ notes, plans, memory, linking = false,
   return parts.length === 0 ? '' : parts.sort().join('|');
 };
 
-const renderMemorySection = (entries) => entries
-  .slice()
-  .sort((a, b) => a.createdAt - b.createdAt)
-  .map((entry) => `- [${entry.type}] ${entry.title}`)
-  .join('\n');
+/** Newest first, so a cut drops the oldest titles rather than the ones just saved. */
+const memoryLines = (entries, ranking = null) => {
+  // Relevance first when a ranking is available; recency breaks the tie and
+  // carries entries the ranking did not reach (not yet promoted, or no query).
+  const rankOf = (id) => (ranking && ranking.has(id) ? ranking.get(id) : Infinity);
+  return entries
+    .slice()
+    .sort((a, b) => {
+      const ra = rankOf(a.id);
+      const rb = rankOf(b.id);
+      if (ra !== rb) return ra - rb;
+      return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+    })
+    .map((entry) => `- [${entry.type}] ${entry.title}`);
+};
+
+const omittedNote = (count) => `- (${count} older ${count === 1 ? 'entry' : 'entries'} not listed here; memory.list shows all)`;
+const OMITTED_NOTE_RESERVE = omittedNote(99_999).length + 1;
+
+/** Whole lines only, and the cut is announced so an unlisted memory is never mistaken for a missing one. */
+const listWithin = (lines, budget) => {
+  if (lines.join('\n').length <= budget) return lines;
+  const kept = [];
+  let used = OMITTED_NOTE_RESERVE;
+  for (const line of lines) {
+    if (used + line.length + 1 > budget) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  return [...kept, omittedNote(lines.length - kept.length)];
+};
+
+/** A scope that fits keeps all of it; the other gets the rest, and two that do not fit share evenly. */
+const splitBudget = (a, b, budget) => {
+  if (a + b <= budget) return [a, b];
+  const half = Math.floor(budget / 2);
+  if (a <= half) return [a, budget - a];
+  if (b <= half) return [budget - b, b];
+  return [half, budget - half];
+};
+
+const GLOBAL_HEADING = '### About the user';
+const PROJECT_HEADING = '### About this project';
 
 /**
  * When to save, stated in every session where memory is on. The tool
@@ -103,11 +144,13 @@ export const WORKTREE_MOVE_GUIDANCE = {
  * Titles only for memory, never bodies: an index carrying full text grows
  * without bound until it crowds out the conversation it was meant to inform.
  */
-const buildMemoryBlock = ({ global, project, enabled = false, complete = false }) => {
-  const sections = [];
-  if (global.length > 0) sections.push(`### About the user\n\n${renderMemorySection(global)}`);
-  if (project.length > 0) sections.push(`### About this project\n\n${renderMemorySection(project)}`);
-  if (sections.length === 0) {
+const buildMemoryBlock = ({
+  global, project, enabled = false, complete = false, budget = Number.POSITIVE_INFINITY,
+  ranking = null,
+}) => {
+  const globalLines = memoryLines(global, ranking);
+  const projectLines = memoryLines(project, ranking);
+  if (globalLines.length === 0 && projectLines.length === 0) {
     if (!enabled) return '';
     // "Empty" only when both scopes loaded: a failed read is not an empty store.
     return complete
@@ -115,7 +158,7 @@ const buildMemoryBlock = ({ global, project, enabled = false, complete = false }
       : MEMORY_SAVE_GUIDANCE;
   }
 
-  return [
+  const lead = [
     ...(enabled ? [MEMORY_SAVE_GUIDANCE] : []),
     'Stored memory from earlier sessions: only the titles are listed below.',
     'A title is an abbreviation, not the memory. Read the entry with the'
@@ -128,7 +171,23 @@ const buildMemoryBlock = ({ global, project, enabled = false, complete = false }
       + ' not read it again on later turns unless your context was summarized.',
     'Memory records what was true when it was written. Verify anything it says'
       + ' about files, flags or commands before relying on it.',
-    ...sections,
+  ].join('\n\n');
+
+  const scopes = [
+    { heading: GLOBAL_HEADING, lines: globalLines },
+    { heading: PROJECT_HEADING, lines: projectLines },
+  ].filter((scope) => scope.lines.length > 0);
+  const framing = lead.length + scopes.reduce((sum, scope) => sum + scope.heading.length + 4, 0);
+  const [globalBudget, projectBudget] = splitBudget(
+    globalLines.join('\n').length,
+    projectLines.join('\n').length,
+    Math.max(0, budget - framing),
+  );
+  const budgets = new Map([[GLOBAL_HEADING, globalBudget], [PROJECT_HEADING, projectBudget]]);
+
+  return [
+    lead,
+    ...scopes.map((scope) => `${scope.heading}\n\n${listWithin(scope.lines, budgets.get(scope.heading)).join('\n')}`),
   ].join('\n\n');
 };
 
@@ -157,12 +216,40 @@ const buildPinnedBlock = ({ notes, plans }) => {
   ].join('\n\n');
 };
 
+/**
+ * Session learnings, surfaced distinctly from facts and preferences (PRD-07 §3.3).
+ *
+ * A learning is a distilled, cost-tagged lesson a future session should read AS a
+ * lesson — "we burned an hour re-deriving X" is not the same kind of thing as "the
+ * pool caps at ten". `cost` is carried so high-cost lessons are visible at a
+ * glance; an unverified learning is marked, never silently dropped.
+ */
+const buildLearningsBlock = (learnings) => {
+  if (!Array.isArray(learnings) || learnings.length === 0) return '';
+  const lines = learnings.map((learning) => {
+    const cost = learning.cost ? ` [cost: ${learning.cost}]` : '';
+    const mark = learning.verified === false ? ' [unverified]' : '';
+    return `- ${learning.summary}${cost}${mark}`;
+  });
+  return `[recall — session_learning]\n${lines.join('\n')}`;
+};
+
 export const buildKnowledgeText = ({ notes, plans, memory, linking = false, worktreeMove = 'off' }) => {
+  const pinned = buildPinnedBlock({ notes, plans });
+  const link = linking ? SESSION_LINK_GUIDANCE : '';
+  const worktree = worktreeMove === 'off' ? '' : WORKTREE_MOVE_GUIDANCE[worktreeMove];
+  // Session learnings are standing context, not memory titles: they keep a fixed
+  // allowance so a few costly lessons are never crowded out by facts.
+  const learningsBlock = buildLearningsBlock(memory.learnings);
+  // Pins, the link rule and learnings keep their room; the memory titles are the
+  // elastic part and take what is left.
+  const memoryBudget = KNOWLEDGE_MAX_LENGTH - pinned.length - link.length - worktree.length - learningsBlock.length - 4;
   const blocks = [
-    buildPinnedBlock({ notes, plans }),
-    buildMemoryBlock(memory),
-    linking ? SESSION_LINK_GUIDANCE : '',
-    worktreeMove === 'off' ? '' : WORKTREE_MOVE_GUIDANCE[worktreeMove],
+    pinned,
+    buildMemoryBlock({ ...memory, budget: memoryBudget }),
+    learningsBlock,
+    link,
+    worktree,
   ].filter(Boolean);
   if (blocks.length === 0) return '';
 
@@ -176,6 +263,9 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
   const {
     projectContextRuntime,
     agentMemoryRuntime,
+    // Relevance ranking of memory titles against a query. Optional: absent, the
+    // block stays newest-first and no vault query is made.
+    queryMemory = null,
     resolveProjectId,
     isAgentMemoryEnabled,
     // Whether this session's agent has the `openchamber` tool to link with.
@@ -188,6 +278,21 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     readSessionMetadata = null,
     persistSessionMetadata = null,
   } = dependencies;
+
+  // Read-path observability: how often the relevance query succeeds vs falls
+  // back to recency. `vault_hits` + `vault_misses` say whether the vault path is
+  // live; `fallback_reason` says why it missed. Zero misses = safety net; nonzero
+  // = the read path is quietly doing something else.
+  const counters = {
+    vault_hits: 0,
+    vault_misses: 0,
+    fallback_reason: null,
+    // Distinct from vault_misses: 0 here means "no session_learning records yet"
+    // (Phase 2 has not run), NOT "the vault query failed". Kept separate so a
+    // pre-Phase-2 zero cannot be read as a broken read path.
+    learnings_found: 0,
+  };
+  const stats = () => ({ ...counters });
 
   const requireMetadataStore = () => {
     if (typeof readSessionMetadata !== 'function' || typeof persistSessionMetadata !== 'function') {
@@ -213,7 +318,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     return { notes: strings(pins.notes), plans: strings(pins.plans) };
   };
 
-  const collect = async (directory, pins = { notes: [], plans: [] }) => {
+  const collect = async (directory, pins = { notes: [], plans: [] }, query = '') => {
     const projectId = directory ? await resolveProjectId(directory) : '';
 
     let notes = [];
@@ -274,7 +379,27 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
       : false;
     const worktreeMove = linking ? (unasked ? 'auto' : 'ask') : 'off';
 
-    return { notes, plans, memory, linking, worktreeMove };
+    // Relevance ranking, best-effort: a vault query failure never fails the
+    // block — it falls through to the recency order and is counted, so a broken
+    // index is observable rather than a silent memory outage.
+    let ranking = null;
+    let learnings = [];
+    const q = (query || '').trim();
+    if (q && typeof queryMemory === 'function') {
+      try {
+        const result = await queryMemory(q);
+        ranking = result.ranking;
+        learnings = Array.isArray(result.learnings) ? result.learnings : [];
+        counters.vault_hits += 1;
+        counters.learnings_found = learnings.length;
+        counters.fallback_reason = null;
+      } catch (error) {
+        counters.vault_misses += 1;
+        counters.fallback_reason = error?.message || String(error);
+      }
+    }
+
+    return { notes, plans, memory: { ...memory, ranking, learnings }, linking, worktreeMove };
   };
 
   /**
@@ -333,8 +458,8 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    * The text this session still owes, or an empty string when it is already
    * carrying it. `deliveredSignature` comes from the session's metadata.
    */
-  const resolvePending = async (directory, deliveredSignature, pins = { notes: [], plans: [] }) => {
-    const collected = await collect(directory, pins);
+  const resolvePending = async (directory, deliveredSignature, pins = { notes: [], plans: [] }, query = '') => {
+    const collected = await collect(directory, pins, query);
     const signature = buildKnowledgeSignature(collected);
     if (!signature || signature === deliveredSignature) {
       return { text: '', signature };
@@ -345,9 +470,9 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
   /**
    * What this session still owes, read from its own stored signature.
    */
-  const resolvePendingForSession = async (sessionId, directory) => {
+  const resolvePendingForSession = async (sessionId, directory, query = '') => {
     const session = await readStoredSession(sessionId).catch(() => null);
-    return resolvePending(directory, readDeliveredSignature(session), readPins(session));
+    return resolvePending(directory, readDeliveredSignature(session), readPins(session), query);
   };
 
   const collectSummaryForSession = async (sessionId, directory) => {
@@ -399,6 +524,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     readDeliveredSignature,
     readPins,
     setPin,
+    stats,
     metadataKey: KNOWLEDGE_METADATA_KEY,
     pinsMetadataKey: PINS_METADATA_KEY,
   };

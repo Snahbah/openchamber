@@ -536,8 +536,8 @@ export const createScheduledTasksRuntime = (deps) => {
 
   // Never allowed to fail the run: a task that executes without its
   // background is a lesser loss than a task that does not execute.
-  const resolveKnowledge = (sessionID, projectPath) => (sessionKnowledgeRuntime
-    ? sessionKnowledgeRuntime.resolvePendingForSession(sessionID, projectPath)
+  const resolveKnowledge = (sessionID, projectPath, query = '') => (sessionKnowledgeRuntime
+    ? sessionKnowledgeRuntime.resolvePendingForSession(sessionID, projectPath, query)
       .catch(() => ({ text: '', signature: '' }))
     : Promise.resolve({ text: '', signature: '' }));
 
@@ -551,7 +551,7 @@ export const createScheduledTasksRuntime = (deps) => {
   };
 
   const runPrompt = async ({ client, sessionID, projectPath, task }) => {
-    const knowledge = await resolveKnowledge(sessionID, projectPath);
+    const knowledge = await resolveKnowledge(sessionID, projectPath, task?.execution?.prompt || '');
 
     // A v2 prompt carries a single authored text. Standing project context and
     // the goal briefing therefore travel as synthetic messages sent first, so
@@ -597,7 +597,7 @@ export const createScheduledTasksRuntime = (deps) => {
   const runScheduledCommand = async ({ client, sessionID, projectPath, command }) => {
     // The command route takes no extra parts, so standing context goes in
     // first as a synthetic message that does not start execution.
-    const knowledge = await resolveKnowledge(sessionID, projectPath);
+    const knowledge = await resolveKnowledge(sessionID, projectPath, command?.arguments || '');
     if (knowledge.text) {
       await client.session.synthetic({ sessionID, text: knowledge.text, resume: false });
     }

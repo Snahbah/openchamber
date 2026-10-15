@@ -551,7 +551,7 @@ export function createMessageQueueRuntime({
     // Standing project context rides the send exactly as a UI send would
     // attach it; a failed lookup sends without it rather than not at all.
     const knowledge = sessionKnowledgeRuntime
-      ? await sessionKnowledgeRuntime.resolvePendingForSession(sessionId, directory)
+      ? await sessionKnowledgeRuntime.resolvePendingForSession(sessionId, directory, item.text)
         .catch(() => ({ text: '', signature: '' }))
       : { text: '', signature: '' };
 
