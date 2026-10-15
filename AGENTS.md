@@ -1,5 +1,8 @@
 # OpenChamber Agent Guide
 
+> **REPOSITORY IDENTITY NOTICE:**
+> This repository is Ross's private repository/fork at **https://github.com/Snahbah/openchamber**, NOT the official upstream repository (`https://github.com/openchamber/openchamber`). All commits, branches, and pushes target Ross's personal repo (`origin` -> `Snahbah/openchamber`).
+
 ## Purpose
 
 OpenChamber provides shared web, desktop, VS Code, hosted-mobile, and native-mobile UI surfaces for OpenCode.

@@ -1,5 +1,8 @@
 # <picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/badges/openchamber-logo-dark.svg"><img src="docs/references/badges/openchamber-logo-light.svg" width="32" height="32" align="absmiddle" /></picture> OpenChamber
 
+> [!NOTE]
+> **Private Repository Fork:** This repository is Ross's private repo/fork hosted at **[https://github.com/Snahbah/openchamber](https://github.com/Snahbah/openchamber)**, containing local integrations, quota providers, and tooling customizations. The upstream official repository is at [https://github.com/openchamber/openchamber](https://github.com/openchamber/openchamber).
+
 [![GitHub stars](https://img.shields.io/github/stars/openchamber/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/openchamber/openchamber/stargazers)
 [![GitHub release](https://img.shields.io/github/v/release/openchamber/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/openchamber/openchamber/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
