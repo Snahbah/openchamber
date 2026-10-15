@@ -127,6 +127,7 @@ import { createAgentMemoryRuntime } from './lib/agent-memory/runtime.js';
 import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
 import { createVaultPromotionRuntime } from './lib/agent-memory/vault-promotion.js';
 import { createIndexQueue } from './lib/agent-memory/index-queue.js';
+import { mirrorSessionLearnings } from './lib/agent-memory/session-learning-mirror.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
 import { isAgentMemoryFeatureAvailable } from './lib/agent-memory/feature-flag.js';
 import { createSpacesHost } from './lib/spaces/host.js';
@@ -682,35 +683,16 @@ void (async () => {
 // Mirror: read Rev's session_learning.jsonl (written by POST /session/distill) and
 // promote each VERIFIED learning into the vault, so a learning distilled in one
 // session is retrieved in the next (PRD-07 §8 "Remember works"). Idempotent by the
-// `sl_<sessionId>_<index>` note id — re-promotion overwrites the same note.
-// Quarantined (unverified) learnings are never promoted: a hallucinated learning
-// must not enter the vault as fact.
+// `sl_<sessionId>_<index>` note id; quarantined learnings are never promoted.
 void (async () => {
   try {
-    const filePath = path.join(os.homedir(), '.oio', 'session_learning.jsonl');
-    const text = await fsPromises.readFile(filePath, 'utf8').catch(() => '');
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      let record;
-      try {
-        record = JSON.parse(line);
-      } catch {
-        continue; // a torn final line is normal for an append-only log
-      }
-      if (record?.type !== 'session_learning') continue;
-      const learnings = Array.isArray(record.learnings) ? record.learnings : [];
-      for (let index = 0; index < learnings.length; index += 1) {
-        const learning = learnings[index];
-        if (!learning || learning.verified !== true) continue;
-        const { path: notePath } = await vaultPromotionRuntime.promoteSessionLearning(
-          learning,
-          record.sessionId,
-          record.domain,
-          index,
-        );
-        await vaultIndexRuntime.syncFile(notePath);
-      }
-    }
+    await mirrorSessionLearnings({
+      filePath: path.join(os.homedir(), '.oio', 'session_learning.jsonl'),
+      fsPromises,
+      promoteSessionLearning: (learning, sessionId, domain, index) =>
+        vaultPromotionRuntime.promoteSessionLearning(learning, sessionId, domain, index),
+      syncFile: (notePath) => vaultIndexRuntime.syncFile(notePath),
+    });
   } catch (error) {
     console.warn('[session-learning-mirror] skipped:', error?.message || error);
   }
