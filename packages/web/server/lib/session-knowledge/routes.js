@@ -31,16 +31,17 @@ export const registerSessionKnowledgeRoutes = (app, dependencies) => {
   app.get('/api/session-knowledge', async (req, res) => {
     const directory = asNonEmptyString(req.query.directory);
     const sessionId = asNonEmptyString(req.query.sessionId);
+    const query = asNonEmptyString(req.query.query);
     if (!directory) {
       return res.status(400).json({ error: 'directory is required' });
     }
 
     try {
       const pending = sessionId
-        ? await sessionKnowledgeRuntime.resolvePendingForSession(sessionId, directory)
+        ? await sessionKnowledgeRuntime.resolvePendingForSession(sessionId, directory, query)
         // A session that does not exist yet — a draft about to be created —
         // has been told nothing, so everything is still owed.
-        : await sessionKnowledgeRuntime.resolvePending(directory, '');
+        : await sessionKnowledgeRuntime.resolvePending(directory, '', { notes: [], plans: [] }, query);
       return res.json(pending);
     } catch (error) {
       // Never fails the caller's send: a message without its background is far

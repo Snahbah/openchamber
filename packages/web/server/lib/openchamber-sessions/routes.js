@@ -592,7 +592,7 @@ export const createOpenChamberSessionService = (dependencies) => {
     // standing context, so it is asked for here. Never fails the dispatch:
     // a session that runs without its background beats one that never runs.
     const knowledge = sessionKnowledgeRuntime
-      ? await sessionKnowledgeRuntime.resolvePendingForSession(sessionID, directory)
+      ? await sessionKnowledgeRuntime.resolvePendingForSession(sessionID, directory, expandedPrompt)
         .catch(() => ({ text: '', signature: '' }))
       : { text: '', signature: '' };
     // After the send is accepted, so a rejected dispatch carries it again.
