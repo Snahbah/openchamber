@@ -971,6 +971,39 @@ const sessionGoalRuntime = createSessionGoalRuntime({
   readSessionMetadata: readStoredSessionMetadata,
   persistSessionGoal: (sessionID, directory, goal) =>
     persistSessionMetadataPatch(sessionID, { openchamber: { goal } }, { directory }),
+  listActiveGoalSessions: async () => {
+    const client = createOpenCodeClient({
+      baseUrl: buildOpenCodeUrl('/', '').replace(/\/$/, ''),
+      headers: getOpenCodeAuthHeaders(),
+    });
+    let list;
+    try {
+      list = await client.session.list({ limit: 200 });
+    } catch (error) {
+      console.warn('[session-goal] kill switch could not list sessions:', error?.message ?? error);
+      return [];
+    }
+    const entries = Array.isArray(list) ? list : (list?.data ?? []);
+    const active = [];
+    for (const entry of entries) {
+      const id = entry?.id ?? entry?.sessionID;
+      if (!id) continue;
+      try {
+        const session = await client.session.get({ sessionID: id });
+        const goal = session?.metadata?.openchamber?.goal;
+        if (goal && goal.status === 'active') {
+          active.push({
+            sessionId: id,
+            directory: session?.location?.directory ?? entry?.location?.directory ?? '',
+            goal,
+          });
+        }
+      } catch {
+        // Session not found or unreadable: nothing to pause.
+      }
+    }
+    return active;
+  },
   emitGoalNotification: async ({ sessionId, directory, status, goal }) => {
     // The goal settle notification replaces the per-turn ready notifications
     // (suppressed while the goal is active) — so it obeys the same toggle.
@@ -2254,6 +2287,7 @@ async function main(options = {}) {
         bunBinaryResolved: resolvedBunBinary || null,
         desktopNotifyEnabled: ENV_DESKTOP_NOTIFY,
         planModeExperimentalEnabled: PLAN_MODE_EXPERIMENT_ENABLED,
+        ...routingRuntime.fallbackStats(),
         apiOnly,
       };
     },
@@ -2426,6 +2460,17 @@ async function main(options = {}) {
   relayService.registerRoutes(app);
 
   registerBrowserControlRoutes(app, { express, broker: browserControlBroker });
+
+  // Emergency kill switch: freeze the session-goal loop and clear every active
+  // goal from the metadata, so a runaway goal cannot keep spending.
+  app.post('/api/goals/stop-all', express.json({ limit: '4kb' }), async (_req, res) => {
+    try {
+      const result = await sessionGoalRuntime.stopAllGoals();
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message ?? String(error) });
+    }
+  });
 
   // One scanner backs both discovery and the tunnel allowlist, so a port the
   // user can see is exactly a port the tunnel will dial.
