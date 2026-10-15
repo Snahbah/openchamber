@@ -679,6 +679,43 @@ void (async () => {
   }
 })();
 
+// Mirror: read Rev's session_learning.jsonl (written by POST /session/distill) and
+// promote each VERIFIED learning into the vault, so a learning distilled in one
+// session is retrieved in the next (PRD-07 §8 "Remember works"). Idempotent by the
+// `sl_<sessionId>_<index>` note id — re-promotion overwrites the same note.
+// Quarantined (unverified) learnings are never promoted: a hallucinated learning
+// must not enter the vault as fact.
+void (async () => {
+  try {
+    const filePath = path.join(os.homedir(), '.oio', 'session_learning.jsonl');
+    const text = await fsPromises.readFile(filePath, 'utf8').catch(() => '');
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue; // a torn final line is normal for an append-only log
+      }
+      if (record?.type !== 'session_learning') continue;
+      const learnings = Array.isArray(record.learnings) ? record.learnings : [];
+      for (let index = 0; index < learnings.length; index += 1) {
+        const learning = learnings[index];
+        if (!learning || learning.verified !== true) continue;
+        const { path: notePath } = await vaultPromotionRuntime.promoteSessionLearning(
+          learning,
+          record.sessionId,
+          record.domain,
+          index,
+        );
+        await vaultIndexRuntime.syncFile(notePath);
+      }
+    }
+  } catch (error) {
+    console.warn('[session-learning-mirror] skipped:', error?.message || error);
+  }
+})();
+
 // Unified Estate Knowledge Engine (Zero-daemon LanceDB in-process service)
 const baseLanceDir = path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Documents', 'GitHub', 'Lance Databases');
 const estateKnowledgeEngine = createEstateKnowledgeEngine({

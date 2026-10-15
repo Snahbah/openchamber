@@ -48,6 +48,28 @@ const formatNote = (entry, scope) => [
   '',
 ].join('\n');
 
+/**
+ * The note shape for a distilled Session Learning (Rev PRD-07 §4). Distinct from
+ * a memory entry: it carries a summary and a cost, not a title and body, and its
+ * `type: session_learning` is what the read path filters on to surface it as a
+ * `[recall — session_learning]` block rather than a fact.
+ */
+const formatSessionLearningNote = (learning, sessionId, domain, index) => [
+  '---',
+  `id: ${JSON.stringify(`sl_${sessionId}_${index}`)}`,
+  'type: session_learning',
+  `summary: ${JSON.stringify(learning.summary)}`,
+  `cost: ${learning.cost}`,
+  `verified: ${learning.verified}`,
+  `sessionId: ${JSON.stringify(sessionId)}`,
+  `domain: ${JSON.stringify(domain)}`,
+  'generated: true',
+  '---',
+  '',
+  learning.summary,
+  '',
+].join('\n');
+
 export const createVaultPromotionRuntime = ({ fsPromises, path, vaultArtifactsDir }) => {
   if (!vaultArtifactsDir?.trim()) {
     throw new Error('vaultArtifactsDir is required');
@@ -79,5 +101,18 @@ export const createVaultPromotionRuntime = ({ fsPromises, path, vaultArtifactsDi
     return { noteId: entry.id, path: notePath };
   };
 
-  return { promote, formatNote, resolveNotePath };
+  /**
+   * Promote one distilled Session Learning (Rev PRD-07 §4). Keyed by a
+   * deterministic `sl_<sessionId>_<index>` id, so a re-run of the mirror
+   * overwrites the same note rather than duplicating it. Only VERIFIED learnings
+   * should ever reach this — the caller filters quarantined ones out first.
+   */
+  const promoteSessionLearning = async (learning, sessionId, domain, index) => {
+    const noteId = `sl_${sessionId}_${index}`;
+    const notePath = path.join(vaultArtifactsDir, `${sanitizeFileName(noteId)}.md`);
+    await writeAtomic(notePath, formatSessionLearningNote(learning, sessionId, domain, index));
+    return { noteId, path: notePath };
+  };
+
+  return { promote, promoteSessionLearning, formatNote, formatSessionLearningNote, resolveNotePath };
 };
