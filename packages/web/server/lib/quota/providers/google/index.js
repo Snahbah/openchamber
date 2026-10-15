@@ -81,8 +81,13 @@ export const fetchGoogleQuota = async ({
   const models = {};
   const sourceErrors = [];
   let mergedAnyUsage = false;
+  // Antigravity and Gemini CLI share this provider id. When Antigravity is
+  // present its two account windows are the whole card; Gemini's per-model
+  // catalog must not be merged in underneath them.
+  const hasAntigravity = authSources.some((source) => source.sourceId === 'antigravity');
 
   for (const source of authSources) {
+    if (hasAntigravity && source.sourceId !== 'antigravity') continue;
     let accessToken = source.accessToken;
     const expires = toNumber(source.expires);
     const isExpired = expires !== null && expires <= Date.now();

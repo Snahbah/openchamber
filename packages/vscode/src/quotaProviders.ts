@@ -9,6 +9,7 @@ import { readConfig } from './opencodeConfig';
 import { isRecord, toProviderEntity } from './opencode-config-v2';
 import { fetchExeDevUsage } from './exeDevQuota';
 import { fetchOllamaUsage } from './ollamaQuota';
+import { fetchQwenCloudUsage } from './qwencloudQuota';
 
 type AuthEntry = Record<string, unknown> | string;
 type AuthFile = Record<string, AuthEntry>;
@@ -833,8 +834,8 @@ const getKimiApiKey = (auth: AuthFile) => {
 export const listConfiguredQuotaProviders = async () => {
   const auth = await readOpenCodeCredentials();
   const configured = new Set<string>();
-  const openCodeGoAuth = normalizeAuthEntry(getAuthEntry(auth, ['opencode-go']));
-  if (openCodeGoAuth && (typeof openCodeGoAuth.key === 'string' || typeof openCodeGoAuth.token === 'string')) configured.add('opencode-go');
+  const openCodeGoAuth = normalizeAuthEntry(getAuthEntry(auth, ['opencode-go', 'opencode']));
+  if (openCodeGoAuth && (typeof openCodeGoAuth.key === 'string' || typeof openCodeGoAuth.token === 'string' || typeof (openCodeGoAuth as Record<string, unknown>).access === 'string')) configured.add('opencode-go');
   if (readCredential('ollama-cloud')) configured.add('ollama-cloud');
   if (readCredential('cursor')) configured.add('cursor');
   if (readCredential('exe-dev')) configured.add('exe-dev');
@@ -934,6 +935,14 @@ export const listConfiguredQuotaProviders = async () => {
 
   if (resolveXaiAuth(auth)) {
     configured.add('xai');
+  }
+
+  const qwenCloudAuth = normalizeAuthEntry(getAuthEntry(auth, ['alibaba-token-plan', 'alibaba-token-plan-cn', 'qwencloud', 'qwen-cloud']));
+  if (
+    (qwenCloudAuth && ((qwenCloudAuth as Record<string, unknown>).key || (qwenCloudAuth as Record<string, unknown>).token)) ||
+    fs.existsSync(path.join(os.homedir(), '.qwencloud', 'credentials'))
+  ) {
+    configured.add('alibaba-token-plan');
   }
 
   return Array.from(configured);
@@ -1307,8 +1316,10 @@ const fetchGoogleQuota = async (): Promise<ProviderResult> => {
   const windows: Record<string, UsageWindow> = {};
   const models: Record<string, ProviderUsage> = {};
   const sourceErrors: string[] = [];
+  const hasAntigravity = authSources.some((source) => source.sourceId === 'antigravity');
 
   for (const source of authSources) {
+    if (hasAntigravity && source.sourceId !== 'antigravity') continue;
     const now = Date.now();
     let accessToken = source.accessToken;
 
@@ -3638,8 +3649,14 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
     case 'opencode-go': {
       try {
         deleteLegacyOpenCodeGoCredential();
-        const entry = normalizeAuthEntry(getAuthEntry(await readOpenCodeCredentials(), ['opencode-go']));
-        const apiKey = typeof entry?.key === 'string' ? entry.key : typeof entry?.token === 'string' ? entry.token : null;
+        const entry = normalizeAuthEntry(getAuthEntry(await readOpenCodeCredentials(), ['opencode-go', 'opencode']));
+        const apiKey = typeof entry?.key === 'string'
+          ? entry.key
+          : typeof entry?.token === 'string'
+            ? entry.token
+            : typeof (entry as Record<string, unknown> | null)?.access === 'string'
+              ? ((entry as Record<string, unknown>).access as string)
+              : null;
         if (!apiKey) return buildResult({ providerId, providerName: 'OpenCode Go', ok: false, configured: false, error: 'Not configured' });
         return buildResult({ providerId, providerName: 'OpenCode Go', ok: true, configured: true, usage: { windows: await fetchOpenCodeGoUsage({ apiKey }) } });
       } catch (error) {
@@ -3662,6 +3679,26 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchNeuralwattQuota();
     case 'xai':
       return fetchXaiQuota();
+    case 'alibaba-token-plan': {
+      try {
+        const { windows, models } = await fetchQwenCloudUsage();
+        return buildResult({
+          providerId,
+          providerName: 'Qwen Cloud',
+          ok: true,
+          configured: true,
+          usage: { windows, models },
+        });
+      } catch (error) {
+        return buildResult({
+          providerId,
+          providerName: 'Qwen Cloud',
+          ok: false,
+          configured: true,
+          error: error instanceof Error ? error.message : 'Request failed',
+        });
+      }
+    }
     default:
       return buildResult({
         providerId,

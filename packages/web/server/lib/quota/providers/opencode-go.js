@@ -4,7 +4,7 @@ import { buildResult, getAuthEntry, normalizeAuthEntry, toUsageWindow } from '..
 
 export const providerId = 'opencode-go';
 export const providerName = 'OpenCode Go';
-export const aliases = ['opencode-go'];
+export const aliases = ['opencode-go', 'opencode'];
 
 const windowsByApiKey = {
   '5h': 'rolling',
@@ -53,7 +53,7 @@ export const fetchOpenCodeGoUsage = async (apiKey, fetchImpl = fetch) => {
 
 const getApiKey = (auth) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  return entry?.key ?? entry?.token ?? null;
+  return entry?.key ?? entry?.token ?? entry?.access ?? null;
 };
 
 export const isConfigured = (auth) => Boolean(getApiKey(auth));

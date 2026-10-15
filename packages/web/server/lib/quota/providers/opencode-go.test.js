@@ -11,7 +11,7 @@ vi.mock('../../opencode/auth.js', () => ({
   readOpenCodeCredentials: async () => ({ 'opencode-go': { key: 'test-key' } }),
 }));
 
-import { fetchOpenCodeGoUsage, fetchQuota, parseOpenCodeGoUsage } from './opencode-go.js';
+import { fetchOpenCodeGoUsage, fetchQuota, isConfigured, parseOpenCodeGoUsage } from './opencode-go.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -87,5 +87,16 @@ describe('OpenCode Go quota provider', () => {
     expect(result).toMatchObject({ providerId: 'opencode-go', ok: true, configured: true });
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-key');
     expect(fs.existsSync(legacyPath)).toBe(false);
+  });
+
+  it('supports OAuth access token from the opencode console integration', () => {
+    const auth = {
+      opencode: {
+        type: 'oauth',
+        access: 'oauth-token-123',
+        refresh: 'refresh-123',
+      },
+    };
+    expect(isConfigured(auth)).toBe(true);
   });
 });

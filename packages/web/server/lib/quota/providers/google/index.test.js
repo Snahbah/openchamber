@@ -68,6 +68,21 @@ describe('Google quota provider', () => {
     expect(result.usage).toBeNull();
   });
 
+  it('does not merge Gemini per-model rows when Antigravity is configured', async () => {
+    const { fetchImpl, result } = await requestQuota({
+      payload: jsonResponse(SUMMARY_PAYLOAD),
+      sources: [
+        { ...ANTIGRAVITY_SOURCE, sourceId: 'gemini', sourceLabel: 'Gemini' },
+        ANTIGRAVITY_SOURCE
+      ]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.usage.models).toEqual({});
+    expect(Object.keys(result.usage.windows).sort()).toEqual(['5h', '7d']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('maps the summary into provider-level windows only', async () => {
     const { result } = await requestQuota({ payload: jsonResponse(SUMMARY_PAYLOAD) });
 

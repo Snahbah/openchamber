@@ -29,4 +29,5 @@ export const QUOTA_PROVIDERS: QuotaProviderMeta[] = [
   { id: 'hyper', name: 'Charm Hyper' },
   { id: 'neuralwatt', name: 'NeuralWatt' },
   { id: 'xai', name: 'xAI' },
+  { id: 'alibaba-token-plan', name: 'Qwen Cloud' },
 ];

@@ -23,7 +23,8 @@ export type QuotaProviderId =
   | 'exe-dev'
   | 'hyper'
   | 'neuralwatt'
-  | 'xai';
+  | 'xai'
+  | 'alibaba-token-plan';
 
 export interface UsageWindowGiftReset {
   recordId: number;

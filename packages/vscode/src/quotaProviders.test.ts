@@ -134,6 +134,56 @@ describe('OpenCode Go quota provider (VS Code parity)', () => {
     assert.equal(result.usage!.windows['5h']!.usedPercent, 25);
     assert.throws(() => fs.statSync(legacyPath));
   });
+
+  test('uses opencode OAuth access token when opencode-go key is absent', async () => {
+    let authHeader: string | null = null;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      authHeader = (init?.headers as Record<string, string>)?.Authorization ?? null;
+      return mockResponse({ usage: { rolling: { percent: 10, resetsAt: '2026-08-12T12:00:00.000Z' } } });
+    }) as typeof fetch;
+
+    configureOpenCodeCredentials({
+      list: async () => [oauth('opencode')],
+    });
+
+    try {
+      const result = await fetchQuotaForProvider('opencode-go');
+      assert.equal(result.ok, true);
+      assert.equal(authHeader, 'Bearer test-token');
+      assert.equal(result.usage!.windows['5h']!.usedPercent, 10);
+    } finally {
+      configureOpenCodeCredentials({
+        list: async () => [
+          oauth('openai'),
+          key('cline-pass'),
+          key('neuralwatt'),
+          key('opencode-go'),
+          key('openrouter'),
+          key('zai-coding-plan'),
+          key('zhipuai-coding-plan'),
+          key('deepseek'),
+          key('deepinfra'),
+          key('hyper'),
+          oauth('github-copilot'),
+          oauth('anthropic'),
+        ],
+      });
+    }
+  });
+
+  test('parses Qwen Cloud quota payload correctly', () => {
+    const { parseQwenCloudPayload } = require('./qwencloudQuota');
+    const { windows } = parseQwenCloudPayload({
+      token_plan: {
+        totalCredits: 1000,
+        remainingCredits: 800,
+        usedPct: 20,
+        resetDate: '2026-11-15T00:00:00.000Z',
+      },
+    });
+    assert.equal(windows.credits.usedPercent, 20);
+    assert.equal(windows.credits.valueLabel, '800 / 1,000 Credits');
+  });
 });
 
 describe('OpenRouter quota provider (VS Code parity)', () => {

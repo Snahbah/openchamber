@@ -23,6 +23,8 @@ const QUOTA_PROVIDER_ALIASES = new Map<string, string>([
   ['anthropic', 'claude'],
   ['claude-code', 'claude'],
   ['gemini', 'google'],
+  ['qwencloud', 'alibaba-token-plan'],
+  ['qwen-cloud', 'alibaba-token-plan'],
 ]);
 
 const normalize = (value: string | null | undefined): string => (value ?? '').trim().toLowerCase();
