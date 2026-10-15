@@ -14,18 +14,19 @@
  */
 import { OpenCode } from '@opencode/client';
 import { z } from 'zod';
-import { AUTO_MODEL_REF, BUILTIN_CATEGORIES, REV_API_URL, REV_MODEL, ZEN_JEV_PROMOTION_ACTIVE, isAutoModel } from './defaults.js';
+import { AUTO_MODEL_REF, BUILTIN_CATEGORIES, ZEN_JEV_PROMOTION_ACTIVE, isAutoModel } from './defaults.js';
 import { createRoutingStore, parseEffectiveConfig } from './store.js';
-import { buildPermissionRequest, buildRoutingRequest, createJevClient, decidePermission, decideRouting } from './jev.js';
+import { buildPermissionRequest, buildProbeRequest, buildRoutingRequest, createJevClient, decidePermission, decideRouting, isProbeAnswer } from './jev.js';
 import {
   CLASSIFIER_SOURCES,
   classifierEndpoint,
   legacyClassifier,
-  normalizeCustomEndpointUrl,
+  parseCustomEndpointUrl,
   readPinnedCustomEndpoint,
   resolveClassifier,
 } from './classifier.js';
 import { loadRoutingHistory } from './history.js';
+import { PROMPT_CACHE_TTL_MS, cacheHoldCategory, warmWindowMs } from './cache.js';
 import { readOpenCodeCredentials } from '../opencode/auth.js';
 import { ENTERPRISE_MODE_ERROR, isEnterpriseMode } from '../enterprise-mode.js';
 
@@ -34,6 +35,17 @@ const HISTORY_TIMEOUT_MS = 2500;
 const PERMISSION_DECISION_TTL_MS = 15 * 60 * 1000;
 
 const errorMessage = (error) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * A classifier error that means "out of quota" — refuse the turn rather than
+ * fall through to the fallback model and spend anyway. Transient errors
+ * (timeout, 5xx) still fall back; a spent quota must not spend more.
+ */
+const isQuotaExhausted = (error) => {
+  const status = Number(error?.status);
+  if (status === 429 || status === 402) return true;
+  return /quota|rate[- ]?limit|insufficient|out of (credits?|balance|quota|funds)|too many requests|billing|payment required/i.test(errorMessage(error));
+};
 
 // v2's command body (`session.command` in the protocol) names the command in
 // `name` and carries its arguments in `text`; a prompt body has no `name`.
@@ -52,6 +64,39 @@ export const requestTextOf = (body) => {
   const prompt = promptBodySchema.safeParse(body);
   return (prompt.success ? prompt.data.text ?? '' : '').trim();
 };
+
+// The prompt body carries the attachments as `{ uri, name }` (`toPromptFile`
+// drops the mime), so an image is recognized from its data URL or its name.
+const attachmentFileSchema = z.object({ uri: z.string().nullish(), name: z.string().nullish() });
+const attachmentListSchema = z.array(attachmentFileSchema);
+const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'heic', 'heif', 'ico', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
+
+const isImageFile = (file) => {
+  const uri = file.uri ?? '';
+  if (uri.startsWith('data:')) return uri.startsWith('data:image/');
+  const name = (file.name ?? '').toLowerCase();
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1));
+};
+
+/**
+ * The attachment fact for the classifier. Jev reads text only, so a pasted
+ * image has to be stated in the request it judges; without this the router
+ * discards the one cue that distinguishes "look at this screenshot" from
+ * "fix the image-upload endpoint". Kept beside `requestTextOf` rather than
+ * inside it, whose tests pin that the raw words stay untouched.
+ */
+export const attachmentHint = (body) => {
+  const files = attachmentListSchema.safeParse(body?.files).data ?? [];
+  const images = files.filter((file) => isImageFile(file));
+  if (images.length === 0) return '';
+  const names = images.map((file) => file.name).filter(Boolean).slice(0, 3);
+  const count = images.length === 1 ? 'an image' : `${images.length} images`;
+  return `\n\n[The user attached ${count}${names.length > 0 ? `: ${names.join(', ')}` : ''}]`;
+};
+
+/** What the classifier sees for this send: the user's words plus the attachment fact. */
+export const routingRequestTextOf = (body) => `${requestTextOf(body)}${attachmentHint(body)}`.trim();
 
 const agentBodySchema = z.object({ agent: z.string().trim().min(1) });
 
@@ -116,13 +161,14 @@ export function createRoutingRuntime({
   broadcastGlobalUiEvent,
   fetchImpl = fetch,
   store = createRoutingStore({ dataDir }),
-  revUrl = REV_API_URL,
   jev = createJevClient({ fetchImpl }),
   readProviderKeys = () => readOpenCodeKeys(),
   zenPromotionActive = ZEN_JEV_PROMOTION_ACTIVE,
   enterpriseMode = isEnterpriseMode,
   readPinnedEndpoint = readPinnedCustomEndpoint,
   listCatalogModels = null,
+  readSessionHistory = null,
+  readConfigEntries = null,
   now = Date.now,
 }) {
   const permissionDecisions = new Map();
@@ -134,6 +180,29 @@ export function createRoutingRuntime({
   // the client resend the sentinel with every send.
   const autoSessions = new Map();
   const AUTO_SESSION_LIMIT = 1000;
+
+  // Fallback telemetry: every time routing falls back to config.fallback.model
+  // (a classifier error or a low-confidence/unknown category), the event is
+  // logged with from/to/reason and counted here, exposed on /health.
+  const fallbacks = { total: 0, byReason: {} };
+  const recordFallback = ({ from, to, reason, sessionId }) => {
+    fallbacks.total += 1;
+    const key = reason || 'unknown';
+    fallbacks.byReason[key] = (fallbacks.byReason[key] ?? 0) + 1;
+    console.warn(JSON.stringify({
+      event: 'routing.fallback',
+      from,
+      to,
+      reason,
+      sessionId,
+      timestamp: new Date(now()).toISOString(),
+    }));
+  };
+  const fallbackStats = () => ({
+    fallbacks_total: fallbacks.total,
+    fallbacks_by_reason: fallbacks.byReason,
+  });
+  const fallbackTarget = (config) => `${config.fallback.model.providerID}/${config.fallback.model.modelID}`;
 
   const broadcast = (type, properties) => {
     try {
@@ -162,12 +231,7 @@ export function createRoutingRuntime({
     const selected = !enterpriseMode() ? stored : pinned && stored !== 'off' ? 'custom' : 'off';
     const classifier = resolveClassifier({ selected, ...keys, zenPromotionActive });
     const endpoint = classifier.effective ? classifierEndpoint(classifier.effective, keys) : null;
-    // A local Rev daemon (REV_API_URL) replaces the cloud classifier for both
-    // routing and safety when the operator runs one. It is a server-side
-    // override: the client still sees the classifier, so its two-value
-    // `jevSource` field never needs a "rev-local" value.
-    const effectiveEndpoint = revUrl ? { url: revUrl, model: REV_MODEL, headers: {}, source: 'rev-local' } : endpoint;
-    return { classifier, endpoint: effectiveEndpoint, tokenPresent: Boolean(typesafeKey), customEndpoint, pinned: pinned !== null };
+    return { classifier, endpoint, tokenPresent: Boolean(typesafeKey), customEndpoint, pinned: pinned !== null };
   };
 
   // What Settings shows of the custom endpoint: never the key itself.
@@ -226,7 +290,7 @@ export function createRoutingRuntime({
     return OpenCode.make({ baseUrl: buildOpenCodeUrl('/', '').replace(/\/$/, ''), headers });
   };
 
-  const readHistory = async ({ sessionId, directory }) => {
+  const readHistory = readSessionHistory ?? (async ({ sessionId, directory }) => {
     const client = openCodeClient(directory);
     const signal = AbortSignal.timeout(HISTORY_TIMEOUT_MS);
     return loadRoutingHistory({
@@ -237,6 +301,31 @@ export function createRoutingRuntime({
         { signal },
       ),
     });
+  });
+
+  // v2 answers the effective config as its documents, lowest priority first.
+  const readConfig = readConfigEntries ?? ((directory) => openCodeClient(directory).config.get());
+
+  /**
+   * "Try to preserve cache usage": the category to stay on instead of a lower
+   * one while the model that wrote the last answer likely still holds a warm
+   * prompt cache, or null to switch as Jev said (`cache.js`). OpenCode's
+   * warming config is read only once the plain cache lifetime has passed.
+   */
+  const cacheHold = async ({ config, chosen, composerAgent, lastAnswer, directory }) => {
+    if (!config.preserveCache || !lastAnswer) return null;
+    const held = cacheHoldCategory({
+      categories: enabledCategories(config), fallback: config.fallback, composerAgent, chosen, current: lastAnswer,
+    });
+    if (!held) return null;
+    const idle = now() - lastAnswer.completed;
+    if (idle < PROMPT_CACHE_TTL_MS) return held;
+    try {
+      return idle < warmWindowMs(await readConfig(directory)) ? held : null;
+    } catch (error) {
+      console.warn('[routing] OpenCode config unavailable, treating the prompt cache as cold:', errorMessage(error));
+      return null;
+    }
   };
 
   // A category without a model of its own means "the fallback pair"; a variant
@@ -306,46 +395,49 @@ export function createRoutingRuntime({
     let selection;
     if (state.autoReady) {
       let history = [];
+      let lastAnswer = null;
       try {
-        history = await readHistory({ sessionId, directory });
+        ({ history, lastAnswer } = await readHistory({ sessionId, directory }));
       } catch (error) {
         console.warn('[routing] history unavailable, routing on the request alone:', errorMessage(error));
-      }
-      // The session's current model is the resident model Rev's KV affinity is
-      // measured against. Reading it is best-effort: without it Rev routes on
-      // the request alone, exactly as it did before.
-      let activeModel = null;
-      try {
-        const info = await openCodeClient(directory).session.get({ sessionID: sessionId });
-        activeModel = info?.model ?? null;
-      } catch (error) {
-        console.warn('[routing] session model unavailable, routing on the request alone:', errorMessage(error));
       }
       try {
         const { endpoint } = await resolveAccess();
         if (!endpoint) throw new Error('No classification provider is available');
         const request = (requestText ?? '').trim();
-        const { answers, retainActiveModel, ms } = await jev.ask(buildRoutingRequest({ categories: enabledCategories(config), history, request, activeModel }), endpoint);
+        const { answers, ms } = await jev.ask(buildRoutingRequest({ categories: enabledCategories(config), history, request }), endpoint);
         const result = decideRouting(answers.category, { categories: enabledCategories(config), minConfidence: config.minConfidence });
         decision.category = result.category?.id ?? null;
         decision.confidence = result.confidence;
         decision.reason = result.reason;
         decision.ms = ms;
-        // KV-cache affinity: when Rev says the resident model can handle the
-        // turn, keep it instead of switching onto the category's model.
-        if (retainActiveModel && activeModel) {
-          selection = {
-            model: { providerID: activeModel.providerID, id: activeModel.id, variant: activeModel.variant ?? null },
-            agent: null,
-            decision: { providerID: activeModel.providerID, modelID: activeModel.id, variant: activeModel.variant ?? null, agent: null, retained: true },
-          };
-        } else {
-          selection = chooseSelection(config, result.category, agent);
+        if (result.category === null) {
+          // Low-confidence or unknown category still falls back to the fallback
+          // model. Count and log it like the error path.
+          recordFallback({ from: null, to: fallbackTarget(config), reason: result.reason, sessionId });
         }
+        const held = await cacheHold({ config, chosen: result.category, composerAgent: agent, lastAnswer, directory });
+        if (held) {
+          // The send runs as the category the session is already on;
+          // `cacheHold.requested` keeps what Jev asked for.
+          decision.category = held.id;
+          decision.cacheHold = { requested: result.category.id };
+        }
+        selection = chooseSelection(config, held ?? result.category, agent);
       } catch (error) {
+        if (isQuotaExhausted(error)) {
+          // Out of quota is not a transient failure: falling back to a (possibly
+          // premium) fallback model would spend while the classifier is spent.
+          // Refuse the turn instead of routing.
+          throw Object.assign(
+            new Error(`Classification provider is out of quota: ${errorMessage(error)}`),
+            { status: 429, code: 'quota-exhausted' },
+          );
+        }
         decision.reason = 'error';
         decision.error = errorMessage(error);
         selection = chooseSelection(config, null, agent);
+        recordFallback({ from: null, to: fallbackTarget(config), reason: `error: ${errorMessage(error)}`, sessionId });
       }
     } else {
       selection = chooseSelection(config, null, agent);
@@ -391,7 +483,7 @@ export function createRoutingRuntime({
       directory,
       model: AUTO_MODEL_REF,
       agent: agentBodySchema.safeParse(body).data?.agent ?? null,
-      requestText: requestTextOf(body),
+      requestText: routingRequestTextOf(body),
     });
     if (!resolved) return null;
     // v2 prompt and command bodies carry neither model nor agent: switching
@@ -495,7 +587,7 @@ export function createRoutingRuntime({
     const parsed = customEndpointInputSchema.safeParse(input);
     if (!parsed.success) throw Object.assign(new Error('A URL and a model are required'), { status: 400 });
     const { model, key } = parsed.data;
-    const url = normalizeCustomEndpointUrl(parsed.data.url);
+    const url = parseCustomEndpointUrl(parsed.data.url);
     // An empty key field is the same as leaving it out.
     const keepKey = key === undefined || key === '';
     const savedKey = keepKey ? (await store.readCustomEndpoint())?.key : key;
@@ -511,6 +603,46 @@ export function createRoutingRuntime({
     if (readPinnedEndpoint()) throw pinnedEndpointError();
     await store.clearCustomEndpoint();
     return publishUpdated();
+  };
+
+  /**
+   * Sends one small Jev request and reports what came back, so Settings can
+   * show a broken setup before a feature quietly falls back. Without `draft`
+   * it tests the provider answering now; with one it tests the custom endpoint
+   * fields as typed, before they are saved (an empty key reuses the saved
+   * one). Nothing is stored either way.
+   */
+  const testClassifier = async (draft) => {
+    let source;
+    let endpoint;
+    if (draft !== undefined) {
+      if (readPinnedEndpoint()) throw pinnedEndpointError();
+      if (enterpriseMode()) throw Object.assign(new Error(ENTERPRISE_MODE_ERROR), { status: 403 });
+      const parsed = customEndpointInputSchema.safeParse(draft);
+      if (!parsed.success) throw Object.assign(new Error('A URL and a model are required'), { status: 400 });
+      const key = parsed.data.key || (await store.readCustomEndpoint())?.key;
+      source = 'custom';
+      endpoint = classifierEndpoint('custom', {
+        customEndpoint: { url: parseCustomEndpointUrl(parsed.data.url), model: parsed.data.model, ...(key ? { key } : {}) },
+      });
+    } else {
+      const access = await resolveAccess();
+      source = access.classifier.effective;
+      endpoint = access.endpoint;
+    }
+    if (!source || !endpoint) return { ok: false, reason: 'unavailable' };
+    try {
+      const { answers, ms } = await jev.ask(buildProbeRequest(), endpoint);
+      if (!isProbeAnswer(answers.probe)) return { ok: false, reason: 'unparsable', source, model: endpoint.model };
+      return { ok: true, source, model: endpoint.model, ms };
+    } catch (error) {
+      if (error?.code === 'timeout') return { ok: false, reason: 'timeout', source, model: endpoint.model };
+      if (typeof error?.status === 'number') return { ok: false, reason: 'http', status: error.status, source, model: endpoint.model };
+      if (error instanceof SyntaxError || /no answers/.test(errorMessage(error))) {
+        return { ok: false, reason: 'unparsable', source, model: endpoint.model };
+      }
+      return { ok: false, reason: 'network', message: errorMessage(error), source, model: endpoint.model };
+    }
   };
 
   /** Where a Jev request goes right now, or null when no classification provider is usable. */
@@ -543,5 +675,7 @@ export function createRoutingRuntime({
     setClassifierSource,
     setCustomEndpoint,
     clearCustomEndpoint,
+    testClassifier,
+    fallbackStats,
   };
 }

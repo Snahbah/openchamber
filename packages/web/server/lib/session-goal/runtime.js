@@ -67,12 +67,6 @@ const REASON_CHAR_LIMIT = 200;
 // sets it in Settings within these bounds.
 const DEFAULT_MAX_AUTO_TURNS = 20;
 const MAX_AUTO_TURNS_LIMIT = 200;
-// Every goal carries a token budget. A goal created without one is bounded by
-// this conservative default, so a goal can never outspend it through turns,
-// compactions, or a dead checker. The budget is a hard stop: once crossed the
-// goal settles as `budgetLimited`, and compaction does not reset it (accounting
-// is segmented across compactions, see the tick below).
-const DEFAULT_GOAL_TOKEN_BUDGET = 200_000;
 
 /** The saved cap, or the default when it is missing or out of bounds. */
 export const normalizeMaxAutoTurns = (value) => (
@@ -187,7 +181,7 @@ const parseGoalMetadata = (session) => {
     objective: objective.slice(0, GOAL_OBJECTIVE_CHAR_LIMIT),
     objectiveFile,
     status,
-    tokenBudget: Number.isFinite(goal.tokenBudget) && goal.tokenBudget > 0 ? Math.floor(goal.tokenBudget) : null,
+    tokenBudget: Number.isFinite(goal.tokenBudget) && goal.tokenBudget > 0 ? Math.floor(goal.tokenBudget) : 200_000,
     tokensUsed: Number.isFinite(goal.tokensUsed) && goal.tokensUsed > 0 ? Math.floor(goal.tokensUsed) : 0,
     tokensBaseline: Number.isFinite(goal.tokensBaseline) && goal.tokensBaseline > 0 ? Math.floor(goal.tokensBaseline) : 0,
     tokensCommitted: Number.isFinite(goal.tokensCommitted) && goal.tokensCommitted > 0 ? Math.floor(goal.tokensCommitted) : 0,
@@ -361,6 +355,8 @@ export const createSessionGoalRuntime = ({
   getMaxAutoTurns = () => readGoalSettings().maxAutoTurns,
   persistSessionGoal = null,
   readSessionMetadata = null,
+  /** Lists sessions whose goal is currently `active`: `[{ sessionId, directory, goal }]`. */
+  listActiveGoalSessions = null,
 }) => {
   const timers = new Map();
   const inflight = new Set();
@@ -487,10 +483,9 @@ export const createSessionGoalRuntime = ({
     }
     try {
       const generated = await service.generateSmallModelText({
-        // Background feature: conversation content must never leave the
-        // session's own provider unless the user explicitly picked a small
-        // model (settings override / opencode config).
-        restrictToPreferredProvider: true,
+        // Background feature: conversation content stays on the session's own
+        // provider unless the user explicitly picked a small model (settings
+        // override / opencode config); naming the provider is what keeps it.
         prompt: buildSmallModelAuditPrompt({ objective, answer }),
         directory,
         sessionID: typeof lastAssistantInfo?.sessionID === 'string' ? lastAssistantInfo.sessionID : undefined,
@@ -683,17 +678,14 @@ export const createSessionGoalRuntime = ({
       const total = messageTokenTotal(info);
       if (info.summary === true) {
         // The summarisation call reads the whole context and writes the
-        // summary, so its own tokens are part of the goal's spend, not free.
-        // opencode under-reports them (often zero); when it does report them,
-        // they must be counted rather than dropped, so the budget does not
-        // undercount the compaction. Close the segment from what is already
-        // known, with the previously displayed total as a continuity floor
-        // (the latest pre-summary snapshot was already folded into tokensUsed
-        // on earlier ticks); otherwise the counter freezes at the
-        // pre-compaction value until the new context outgrows it.
+        // summary, so it costs tokens even though opencode reports the summary
+        // message as 0 tokens. Estimate its output from the summary text so the
+        // compaction is charged to the budget instead of free, while the
+        // segment close (segmentSnapshot − baseline) prices the context it read.
+        const summaryCost = Math.max(total, Math.ceil(messagePartsToText(message).length / 4));
         tokensCommitted = Math.max(
           goal.tokensUsed,
-          tokensCommitted + Math.max(0, (segmentSnapshot ?? 0) - tokensBaseline) + total,
+          tokensCommitted + Math.max(0, (segmentSnapshot ?? 0) - tokensBaseline) + summaryCost,
         );
         tokensBaseline = 0;
         segmentSnapshot = null;
@@ -712,12 +704,6 @@ export const createSessionGoalRuntime = ({
     }
 
     const assistantText = messagePartsToText(lastAssistant);
-
-    // The goal's budget is mandatory: a goal without one is bounded by the
-    // conservative default rather than being allowed to spend without limit.
-    const tokenBudget = typeof goal.tokenBudget === 'number' && goal.tokenBudget > 0
-      ? goal.tokenBudget
-      : DEFAULT_GOAL_TOKEN_BUDGET;
 
     // --- Terminal conditions, cheapest first ---
 
@@ -755,22 +741,12 @@ export const createSessionGoalRuntime = ({
       return;
     }
 
-    // Token budget crossed → budgetLimited. A goal without a budget of its own
-    // is still stopped by the conservative default — the budget is a hard cap,
-    // not opt-in.
-    if (tokensUsed >= tokenBudget) {
+    // Token budget crossed → budgetLimited.
+    if (typeof goal.tokenBudget === 'number' && tokensUsed >= goal.tokenBudget) {
       await settleGoal({
         sessionId, directory, goal, status: 'budgetLimited', statusReason: 'token budget reached', tokensUsed, tokensBaseline, tokensCommitted, lastAccountedMessageID,
       });
       return;
-    }
-
-    // Warn the operator as the budget is consumed, so a goal approaching its
-    // cap is visible before it hard-stops. 50% and 90% are the checkpoints.
-    if (tokensUsed >= tokenBudget * 0.9) {
-      console.warn(`[session-goal] ${sessionId} used ${Math.round((tokensUsed / tokenBudget) * 100)}% of its token budget (${tokensUsed}/${tokenBudget})`);
-    } else if (tokensUsed >= tokenBudget * 0.5) {
-      console.warn(`[session-goal] ${sessionId} used ${Math.round((tokensUsed / tokenBudget) * 100)}% of its token budget (${tokensUsed}/${tokenBudget})`);
     }
 
     // Auto-continuation safety cap → blocked.
@@ -799,9 +775,8 @@ export const createSessionGoalRuntime = ({
     // an aborted tail, is by definition "in progress, not finished" — there is
     // nothing meaningful to audit, so it continues. A compaction summary is
     // NOT skipped: it is the agent's latest statement of what is done and what
-    // remains, so it must be audited rather than continued past blindly — a
-    // dead checker then trips the audit-fail limit instead of driving the loop
-    // through compaction after compaction up to the turn cap.
+    // remains, so it must count as a turn against the budget and the
+    // auto-continuation cap rather than continue past them blindly.
     let audit = null;
     let auditFailStreak = goal.auditFailStreak;
     if (!(abortedTail || lengthTail)) {
@@ -869,8 +844,14 @@ export const createSessionGoalRuntime = ({
       return;
     }
 
-    console.log(`[session-goal] continuing ${sessionId} (turn ${written.turnsUsed}/${maxAutoTurns}, tokens ${written.tokensUsed}/${tokenBudget})`);
-    await sendContinuation({ sessionId, directory, goal: { ...written, objective: effectiveObjective, tokenBudget }, maxAutoTurns });
+    // The kill switch may have tripped while this tick was in flight (audit,
+    // metadata write). Do not send the continuation.
+    if (stopped) {
+      console.log(`[session-goal] ${sessionId} stopped by kill switch, dropping continuation`);
+      return;
+    }
+    console.log(`[session-goal] continuing ${sessionId} (turn ${written.turnsUsed}/${maxAutoTurns}, tokens ${written.tokensUsed}${written.tokenBudget ? `/${written.tokenBudget}` : ''})`);
+    await sendContinuation({ sessionId, directory, goal: { ...written, objective: effectiveObjective }, maxAutoTurns });
   };
 
   const armTimer = (sessionId, directory, quietMs) => {
@@ -999,5 +980,34 @@ export const createSessionGoalRuntime = ({
     timers.clear();
   };
 
-  return { processPayload, notifyGoalChanged, stop };
+  /**
+   * Kill switch: freeze the loop (no new timers, in-flight ticks bail before
+   * their continuation) and clear every active goal from the metadata so a
+   * restart cannot silently resume it. Returns how many goals were paused.
+   */
+  const stopAllGoals = async () => {
+    stop();
+    if (typeof listActiveGoalSessions !== 'function') return { frozen: true, stopped: 0 };
+    let sessions;
+    try {
+      sessions = await listActiveGoalSessions();
+    } catch (error) {
+      console.warn('[session-goal] kill switch could not list goals:', error?.message ?? error);
+      return { frozen: true, stopped: 0 };
+    }
+    let stoppedCount = 0;
+    for (const entry of sessions ?? []) {
+      const sessionId = entry?.sessionId;
+      const goal = entry?.goal;
+      if (!sessionId || !goal?.id) continue;
+      const written = await writeGoal(sessionId, entry.directory ?? '', goal.id, () => ({
+        status: 'paused',
+        statusReason: 'stopped by kill switch',
+      }));
+      if (written) stoppedCount += 1;
+    }
+    return { frozen: true, stopped: stoppedCount };
+  };
+
+  return { processPayload, notifyGoalChanged, stop, stopAllGoals };
 };
