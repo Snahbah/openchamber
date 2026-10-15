@@ -39,6 +39,7 @@ export const createAgentMemoryActions = (dependencies) => {
     onMemoryChanged,
     resolveProjectId: resolveProjectIdForDirectory,
     isAgentMemoryEnabled,
+    indexQueue,
   } = dependencies;
 
   /**
@@ -182,6 +183,10 @@ export const createAgentMemoryActions = (dependencies) => {
       type: input.type,
       sessionId: asNonEmptyString(input.sessionId),
     });
+    // Mirror the save into the semantic index off the hot path. The JSON write is
+    // authoritative and has already succeeded; this enqueue is non-blocking and
+    // must never fail the save.
+    if (indexQueue?.enqueue) indexQueue.enqueue(result.entry, target.scope);
     announce(target.scope, target.projectId);
     // Deliberately does not echo the text back. Handing the model what it just
     // wrote invites it to find something to improve and re-save, and the store
