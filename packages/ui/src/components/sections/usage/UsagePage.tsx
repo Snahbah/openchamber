@@ -97,12 +97,17 @@ export const UsagePage: React.FC = () => {
     void updateDesktopSettings({ usageDropdownProviders: next });
   }, [dropdownProviderIds, selectedProviderId, setDropdownProviderIds]);
 
+  // Agy reports two account pools (5h and weekly), shared by Gemini and the other
+  // Antigravity models. Per-model rows are a different provider's shape and must
+  // not render here, including when a Gemini CLI source is merged into this card.
+  const isAgy = selectedProviderId === 'google';
+
   const providerModels = React.useMemo((): ModelInfo[] => {
-    if (!usage?.models) return [];
+    if (isAgy || !usage?.models) return [];
     return Object.entries(usage.models)
       .map(([name, modelUsage]) => ({ name, windows: modelUsage }))
       .filter((model) => Object.keys(model.windows.windows).length > 0);
-  }, [usage?.models]);
+  }, [isAgy, usage?.models]);
 
   React.useEffect(() => {
     if (selectedProviderId && providerModels.length > 0) {
@@ -220,8 +225,21 @@ export const UsagePage: React.FC = () => {
       {usage?.windows && Object.keys(usage.windows).length > 0 && (
         <SettingsSection settingsItem="usage.model-quotas">
           <div className="divide-y divide-[var(--surface-subtle)]">
-            {Object.entries(usage.windows).map(([label, window]) => (
-              <UsageCard key={label} title={label} window={window} providerId={selectedProviderId} />
+            {(isAgy
+              ? (['7d', '5h'] as const).flatMap((label) => {
+                const window = usage.windows[label];
+                return window ? [[label, window] as const] : [];
+              })
+              : Object.entries(usage.windows)
+            ).map(([label, window]) => (
+              <UsageCard
+                key={label}
+                title={isAgy
+                  ? t(label === '7d' ? 'quota.window.agy.weeklyRemaining' : 'quota.window.agy.fiveHourRemaining')
+                  : label}
+                window={window}
+                providerId={selectedProviderId}
+              />
             ))}
           </div>
         </SettingsSection>
