@@ -100,7 +100,7 @@ export const UsagePage: React.FC = () => {
   // Agy reports two account pools (5h and weekly), shared by Gemini and the other
   // Antigravity models. Per-model rows are a different provider's shape and must
   // not render here, including when a Gemini CLI source is merged into this card.
-  const isAgy = selectedProviderId === 'google';
+  const isAgy = selectedProviderId === 'google' || selectedProviderId === 'antigravity';
 
   const providerModels = React.useMemo((): ModelInfo[] => {
     if (isAgy || !usage?.models) return [];
@@ -226,7 +226,7 @@ export const UsagePage: React.FC = () => {
         <SettingsSection settingsItem="usage.model-quotas">
           <div className="divide-y divide-[var(--surface-subtle)]">
             {(isAgy
-              ? (['7d', '5h'] as const).flatMap((label) => {
+              ? (['5h', '7d'] as const).flatMap((label) => {
                 const window = usage.windows[label];
                 return window ? [[label, window] as const] : [];
               })

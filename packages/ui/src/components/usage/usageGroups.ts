@@ -20,10 +20,10 @@ export type UsageLimitRow = {
  * Agy (Antigravity) reports account pools, not per-model limits, so it is shown
  * as exactly these two rows, weekly first. Model rows are never listed for it.
  */
-const AGY_PROVIDER_ID: QuotaProviderId = 'google';
+const isAgyProvider = (id: string): boolean => id === 'google' || id === 'antigravity';
 const AGY_WINDOWS = [
-  { window: '7d', labelKey: 'quota.window.agy.weeklyRemaining' },
   { window: '5h', labelKey: 'quota.window.agy.fiveHourRemaining' },
+  { window: '7d', labelKey: 'quota.window.agy.weeklyRemaining' },
 ] as const;
 
 export const formatUsageRowValue = (row: UsageLimitRow, displayMode: 'usage' | 'remaining'): string => {
@@ -108,7 +108,7 @@ export const useUsageProviderGroups = (): UsageProviderGroup[] => {
       })
       .map((providerMeta) => {
         const result = resultsByProvider.get(providerMeta.id);
-        const rows: UsageLimitRow[] = providerMeta.id === AGY_PROVIDER_ID
+        const rows: UsageLimitRow[] = isAgyProvider(providerMeta.id)
           ? AGY_WINDOWS.flatMap(({ window: label, labelKey }) => {
             const window = result?.usage?.windows?.[label];
             return window
