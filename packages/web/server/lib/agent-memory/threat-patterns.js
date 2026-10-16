@@ -19,18 +19,19 @@
 
 const PATTERNS = [
   // Trying to displace instructions already in play.
-  /\bignore\s+(?:all\s+|any\s+)?(?:previous|prior|earlier|above)\s+(?:instructions?|prompts?|rules?|context)\b/i,
-  /\bdisregard\s+(?:all\s+|any\s+)?(?:previous|prior|earlier|above)\s+(?:instructions?|prompts?|rules?)\b/i,
+  /\bignore\s+(?:all\s+|any\s+)?(?:previous|prior|earlier|above)\s+(?:instructions?|prompts?|rules?|context|guidelines?|policies|constraints?|safety)\b/i,
+  /\bdisregard\s+(?:all\s+|any\s+)?(?:previous|prior|earlier|above)\s+(?:instructions?|prompts?|rules?|guidelines?)\b/i,
   /\bforget\s+(?:everything|all)\s+(?:you|above|before)\b/i,
-  /\boverrid(?:e|ing)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions?)\b/i,
+  /\boverrid(?:e|ing)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions?|guidelines?)\b/i,
 
   // Trying to reassign who the model is.
   /\byou\s+are\s+now\s+(?:a|an|the)\b/i,
   /\bfrom\s+now\s+on[,\s]+(?:you|act|behave|respond)\b/i,
   /\bact\s+as\s+(?:if\s+you\s+are\s+)?(?:a|an|the)\s+\w+\s+with\s+no\s+(?:restrictions?|limits?|rules?)\b/i,
 
-  // Forging turn structure so the text reads as a different speaker.
+  // Forging turn structure so the text reads as a different speaker or tag injection.
   /^\s*(?:system|assistant|developer)\s*:/im,
+  /<\/?(?:system|prompt|instructions?|developer|context)>/i,
   /<\|(?:im_start|im_end|system|endoftext)\|>/i,
   /\[\/?(?:INST|SYS)\]/,
 
@@ -39,7 +40,7 @@ const PATTERNS = [
   /\bdeveloper\s+mode\s+(?:enabled|on|activated)\b/i,
 
   // Asking for what the model was told, or for credentials to travel.
-  /\b(?:print|reveal|repeat|output|show)\s+(?:me\s+)?(?:your|the)\s+(?:system\s+prompt|instructions|initial\s+prompt)\b/i,
+  /\b(?:print|reveal|repeat|output|show)\s+(?:me\s+)?(?:your|the)\s+(?:system\s+prompt|instructions|initial\s+prompt|master\s+keys?|secrets?|tokens?)\b/i,
   /\b(?:send|post|upload|exfiltrate)\s+(?:the\s+|your\s+)?(?:api\s+key|token|credentials?|secrets?|env)\b/i,
 ];
 

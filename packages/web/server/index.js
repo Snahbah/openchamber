@@ -1975,11 +1975,14 @@ const openChamberControlService = createOpenChamberControlService({
   },
   agentMemoryActions: createAgentMemoryActions({
     agentMemoryRuntime,
+    vaultPromotion: vaultPromotionRuntime,
+    vaultIndexRuntime,
+    indexQueue,
+    estateKnowledgeEngine,
     createError: (message, status) => new OpenChamberControlError(message, status),
     onMemoryChanged: emitAgentMemoryChangedEvent,
     isAgentMemoryEnabled,
     resolveProjectId: resolveMemoryProjectId,
-    indexQueue,
   }),
   sessionLinks: createSessionLinker({
     updateMetadata: updateSessionMetadataWith,
