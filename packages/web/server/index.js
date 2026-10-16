@@ -125,13 +125,14 @@ import { createAgentMemoryRuntime } from './lib/agent-memory/runtime.js';
 import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
 import { isAgentMemoryFeatureAvailable } from './lib/agent-memory/feature-flag.js';
+import { createTranscriptRuntime } from './lib/agent-memory/transcript-runtime.js';
 import { createSpacesHost } from './lib/spaces/host.js';
 import { createSpaceArchive } from './lib/spaces/space-archive.js';
 import { readIdleStopSetting, startIdleStop } from './lib/spaces/idle-stop.js';
 import { dockerHostOf } from './lib/spaces/places/ssh-host.js';
 import { SPACE_IDLE_EXIT_CODE } from './lib/spaces/layout.js';
 import { createSwitchController, registerSpaceRoutes } from './lib/spaces/routes.js';
-import { configureGitEnvironment, resolvePrimaryWorktreeRoot } from './lib/git/service.js';
+import { configureGitEnvironment, getRepositoryRoot, getStatus, resolvePrimaryWorktreeRoot } from './lib/git/service.js';
 import { createEnvironmentStore } from './lib/environment/store.js';
 import { createEnvironmentRuntime } from './lib/environment/runtime.js';
 import { readOpenCodeServiceEnv } from './lib/environment/opencode-service-env.js';
@@ -1168,6 +1169,16 @@ const messageSearchRuntime = createMessageSearchRuntime({
     const settings = await readSettingsFromDisk();
     return { enabled: settings.messageSearchEnabled === true, reasoning: settings.messageSearchReasoningEnabled === true };
   },
+});
+
+// The distillation ingestion path (Rev PRD-07 §3.2): on a timer, writes every
+// idle session's transcript (turns + working-tree files) to
+// ~/.oio/sessions_pending/, which Rev's sweep distils. Started in main().
+const transcriptRuntime = createTranscriptRuntime({
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+  getStatus,
+  getRepositoryRoot,
 });
 
 const openCodeWatcherRuntime = createOpenCodeWatcherRuntime({
@@ -2652,6 +2663,16 @@ async function main(options = {}) {
     await scheduledTasksRuntime.start();
   } catch (error) {
     console.warn('[ScheduledTasks] Failed to start runtime:', error?.message || error);
+  }
+
+  // The distillation ingestion path (Rev PRD-07 §3.2): writes idle sessions'
+  // transcripts to ~/.oio/sessions_pending/ so Rev's sweep can distil them. A
+  // failure here must not stop the server coming up; the timer keeps the loop
+  // self-healing regardless.
+  try {
+    transcriptRuntime.start();
+  } catch (error) {
+    console.warn('[Transcripts] Failed to start runtime:', error?.message || error);
   }
 
   // Only opens a relay control socket when the user opted in (config enabled).
