@@ -126,6 +126,16 @@ import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
 import { isAgentMemoryFeatureAvailable } from './lib/agent-memory/feature-flag.js';
 import { createTranscriptRuntime } from './lib/agent-memory/transcript-runtime.js';
+import { createVaultPromotionRuntime } from './lib/agent-memory/vault-promotion.js';
+import { createIndexQueue } from './lib/agent-memory/index-queue.js';
+import { mirrorSessionLearnings } from './lib/agent-memory/session-learning-mirror.js';
+import { createVaultIndexRuntime } from './lib/vault-index/runtime.js';
+import { createEstateKnowledgeEngine } from './lib/vault-index/estate-knowledge.js';
+import { createEventLog } from './lib/episodic-log/event-log.js';
+import { createReflectionEngine } from './lib/compaction/reflection-engine.js';
+import { assessSalience } from './lib/compaction/salience.js';
+import { staleEchoMotifs } from './lib/compaction/staleness.js';
+import { createRecallAssembly } from './lib/recall/assembly.js';
 import { createSpacesHost } from './lib/spaces/host.js';
 import { createSpaceArchive } from './lib/spaces/space-archive.js';
 import { readIdleStopSetting, startIdleStop } from './lib/spaces/idle-stop.js';
@@ -652,6 +662,107 @@ const agentMemoryRuntime = createAgentMemoryRuntime({
   userConfigRoot: OPENCHAMBER_USER_CONFIG_ROOT,
 });
 
+// Tier 3 vault promotion: writes a promoted memory into the Agents Vault as a
+// Markdown note. Env-var driven so the install can point it at its own vault;
+// the fallback is the repo-relative `Agents Vault`.
+const agentsVaultRoot = process.env.OPENCHAMBER_AGENTS_VAULT_DIR
+  || path.join(path.resolve(__dirname, '..', '..', '..'), 'Agents Vault');
+const agentsVaultArtifactsDir = path.join(agentsVaultRoot, 'Artifacts');
+const vaultPromotionRuntime = createVaultPromotionRuntime({
+  fsPromises,
+  path,
+  vaultArtifactsDir: agentsVaultArtifactsDir,
+});
+
+// Tier 2 semantic index: the Agents Vault, embedded and stored in a local
+// LanceDB table. Lazy — the model and table open only on first sync/query, so
+// the server boots without importing onnxruntime-web or the LanceDB binding.
+const embedderDir = process.env.OPENCHAMBER_EMBEDDER_DIR
+  || path.join(process.env.USERPROFILE || process.env.HOME || '.', '.cache', 'openchamber', 'embedder', 'bge-base-en-v1.5');
+const vaultIndexRuntime = createVaultIndexRuntime({
+  vaultDir: agentsVaultRoot,
+  dbPath: path.join(OPENCHAMBER_DATA_DIR, 'stores', 'vault'),
+  tableName: 'vault',
+  modelPath: path.join(embedderDir, 'onnx', 'model.onnx'),
+  vocabPath: path.join(embedderDir, 'vocab.txt'),
+});
+
+// Index-on-write: mirrors each agent-memory write into the vault semantic index
+// off the hot path, so the prompt block can rank by relevance instead of reading
+// the flat title list. Bounded, with a background drain, backoff and counters.
+const indexQueue = createIndexQueue({
+  promote: (entry, scope) => vaultPromotionRuntime.promote(entry, scope),
+  syncFile: (notePath) => vaultIndexRuntime.syncFile(notePath),
+  logger: { warn: (message, payload) => console.warn(`[memory-index] ${message}`, payload) },
+});
+
+// Self-healing backfill: on boot, re-promote global memory so the vault index is
+// not empty for entries saved before indexing existed. Idempotent by design —
+// re-promotion overwrites the same note — so re-running it on every boot both
+// backfills and repairs any note that was edited or deleted out from under it.
+void (async () => {
+  try {
+    const { global } = await agentMemoryRuntime.readAll(null);
+    for (const entry of global) {
+      indexQueue.enqueue(entry, 'global');
+    }
+  } catch (error) {
+    console.warn('[memory-index] backfill skipped:', error?.message || error);
+  }
+})();
+
+// Mirror: read Rev's session_learning.jsonl (written by POST /session/distill) and
+// promote each VERIFIED learning into the vault, so a learning distilled in one
+// session is retrieved in the next (PRD-07 §8 "Remember works"). Idempotent by the
+// `sl_<sessionId>_<index>` note id; quarantined learnings are never promoted.
+void (async () => {
+  try {
+    await mirrorSessionLearnings({
+      filePath: path.join(os.homedir(), '.oio', 'session_learning.jsonl'),
+      fsPromises,
+      promoteSessionLearning: (learning, sessionId, domain, index) =>
+        vaultPromotionRuntime.promoteSessionLearning(learning, sessionId, domain, index),
+      syncFile: (notePath) => vaultIndexRuntime.syncFile(notePath),
+    });
+  } catch (error) {
+    console.warn('[session-learning-mirror] skipped:', error?.message || error);
+  }
+})();
+
+// Unified Estate Knowledge Engine (zero-daemon LanceDB in-process service).
+const baseLanceDir = path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Documents', 'GitHub', 'Lance Databases');
+const estateKnowledgeEngine = createEstateKnowledgeEngine({
+  vaultDbPath: path.join(OPENCHAMBER_DATA_DIR, 'stores', 'vault'),
+  typescriptDbPath: path.join(baseLanceDir, 'typescript_reference.lance'),
+  adobeDbPath: path.join(baseLanceDir, 'adobe_codex.lance'),
+  maxonDbPath: path.join(baseLanceDir, 'maxon_lancedb.lance'),
+  openchamberDbPath: path.join(baseLanceDir, 'openchamber.lance'),
+  unrealDbPath: path.join(baseLanceDir, 'unreal_engine.lance'),
+  rustDbPath: path.join(baseLanceDir, 'rust_reference.lance'),
+});
+
+// Tier 1 episodic event log (River): append-only Lamport-sequenced JSONL log.
+const episodicEventLog = createEventLog({
+  fsPromises: fs.promises,
+  path,
+  logDir: path.join(OPENCHAMBER_DATA_DIR, 'episodic-log'),
+  strictProvenance: true,
+});
+void episodicEventLog.boot().catch((err) => {
+  console.warn('[episodic-log] failed to boot:', err?.message || err);
+});
+
+// Loops 2 & 3: autonomous reflection and dream engine.
+const reflectionEngine = createReflectionEngine({
+  episodicLog: episodicEventLog,
+  vaultPromotion: vaultPromotionRuntime,
+  reflectionThreshold: 3,
+  reflectionCooldownMs: 60_000,
+  dreamThreshold: 3,
+  logger: (msg, payload) => console.log(`[memory-reflection] ${msg}`, payload?.timestamp || ''),
+});
+reflectionEngine.start(60_000);
+
 /**
  * One switch for everything memory-related. It gates the tool, these routes,
  * and the session index alike, so turning memory off leaves nothing behind
@@ -1048,6 +1159,31 @@ const sessionGoalRuntime = createSessionGoalRuntime({
 const sessionKnowledgeRuntime = createSessionKnowledgeRuntime({
   projectContextRuntime,
   agentMemoryRuntime,
+  // Relevance ranking: query the vault for memory-kind notes, keyed by memory id.
+  // Lower rank = more relevant; entries absent from the map fall to recency order.
+  queryMemory: async (text) => {
+    const results = await estateKnowledgeEngine.queryVault(text, 200);
+    const ranking = new Map();
+    const learnings = [];
+    let index = 0;
+    for (const result of results) {
+      const meta = result.metadata || {};
+      if (meta.type === 'session_learning') {
+        // Session learnings (Phase 2) surface as a distinct block, not as facts.
+        learnings.push({
+          summary: typeof meta.summary === 'string' ? meta.summary : (result.text || '').trim(),
+          cost: typeof meta.cost === 'string' ? meta.cost : null,
+          verified: meta.verified === true,
+        });
+      } else if (meta.type === 'fact' || meta.type === 'preference' || meta.type === 'reference') {
+        if (meta.id && !ranking.has(meta.id)) {
+          ranking.set(meta.id, index);
+          index += 1;
+        }
+      }
+    }
+    return { ranking, learnings };
+  },
   // Called, not captured: the resolver is declared further down, and taking a
   // reference here would read it before it exists.
   resolveProjectId: (directory) => resolveMemoryProjectId(directory),
@@ -1843,6 +1979,7 @@ const openChamberControlService = createOpenChamberControlService({
     onMemoryChanged: emitAgentMemoryChangedEvent,
     isAgentMemoryEnabled,
     resolveProjectId: resolveMemoryProjectId,
+    indexQueue,
   }),
   sessionLinks: createSessionLinker({
     updateMetadata: updateSessionMetadataWith,
@@ -2471,6 +2608,150 @@ async function main(options = {}) {
   relayService.registerRoutes(app);
 
   registerBrowserControlRoutes(app, { express, broker: browserControlBroker });
+
+  app.post('/api/vault-index/sync', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const results = await vaultIndexRuntime.syncVault(req.body || {});
+      res.json({ ok: true, indexed: results.length, results });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/vault-index/query', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const text = req.body?.text || req.body?.query;
+      if (!text || typeof text !== 'string') {
+        return res.status(400).json({ ok: false, error: 'text is required' });
+      }
+      const rows = await vaultIndexRuntime.query(text, req.body?.limit ?? 5);
+      res.json({ ok: true, results: rows });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.get('/api/episodic-log/tail', async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const limit = parseInt(req.query?.limit, 10) || 50;
+      const events = await episodicEventLog.tail(limit);
+      res.json({ ok: true, count: events.length, events });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/salience', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const beats = Array.isArray(req.body?.beats) ? req.body.beats : [];
+      const result = assessSalience(beats);
+      res.json({ ok: true, salience: result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/compact', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const inscriptions = Array.isArray(req.body?.inscriptions) ? req.body.inscriptions : [];
+      const staleMotifs = staleEchoMotifs(inscriptions, { minReinscriptions: req.body?.minReinscriptions || 3 });
+      res.json({ ok: true, staleMotifs });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/recall', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      const interlocutor = req.body?.interlocutor || 'project';
+      const kinds = Array.isArray(req.body?.kinds) ? req.body.kinds : [
+        { kind: 'typed_memory', priority: 1, share: 0.40 },
+        { kind: 'diary', priority: 2, share: 0.30, freshnessDays: 7 },
+        { kind: 'episodic', priority: 3, share: 0.30, freshnessDays: 14 },
+      ];
+      const assembly = createRecallAssembly({ kinds, totalChars: req.body?.totalChars || 4000 });
+      const context = assembly.assemble({ entries, interlocutor });
+      res.json({ ok: true, context });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/reflect', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const force = req.body?.force === true;
+      const result = await reflectionEngine.reflect({ force });
+      res.json({ ok: true, result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/memory/dream', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const force = req.body?.force === true;
+      const result = await reflectionEngine.maybeDream({ force });
+      res.json({ ok: true, result });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.get('/api/memory/loops/status', async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const status = reflectionEngine.status();
+      const recentEvents = await episodicEventLog.tail(10);
+      res.json({ ok: true, loopStatus: status, recentTailCount: recentEvents.length });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
+
+  app.post('/api/estate/query', express.json({ limit: '1mb' }), async (req, res) => {
+    if (!isAgentMemoryFeatureAvailable()) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    try {
+      const text = req.body?.text || req.body?.query;
+      if (!text || typeof text !== 'string') {
+        return res.status(400).json({ ok: false, error: 'query text is required' });
+      }
+      const domain = req.body?.domain || 'all';
+      const limit = parseInt(req.body?.limit, 10) || 5;
+      const results = await estateKnowledgeEngine.query(text, { domain, limit, host: req.body?.host });
+      res.json({ ok: true, domain, results });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || String(error) });
+    }
+  });
 
   // Emergency kill switch: freeze the session-goal loop and clear every active
   // goal from the metadata, so a runaway goal cannot keep spending.
