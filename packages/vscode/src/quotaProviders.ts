@@ -9,6 +9,7 @@ import { readOpenCodeCredentials } from './opencodeAuth';
 import { readConfig } from './opencodeConfig';
 import { isRecord, toProviderEntity } from './opencode-config-v2';
 import { fetchExeDevUsage } from './exeDevQuota';
+import { fetchQwenCloudUsage } from './qwencloudQuota';
 
 type AuthEntry = Record<string, unknown> | string;
 type AuthFile = Record<string, AuthEntry>;
@@ -939,6 +940,14 @@ export const listConfiguredQuotaProviders = async () => {
 
   if (resolveXaiAuth(auth)) {
     configured.add('xai');
+  }
+
+  const qwenCloudAuth = normalizeAuthEntry(getAuthEntry(auth, ['alibaba-token-plan', 'alibaba-token-plan-cn', 'qwencloud', 'qwen-cloud']));
+  if (
+    (qwenCloudAuth && ((qwenCloudAuth as Record<string, unknown>).key || (qwenCloudAuth as Record<string, unknown>).token)) ||
+    fs.existsSync(path.join(os.homedir(), '.qwencloud', 'credentials'))
+  ) {
+    configured.add('alibaba-token-plan');
   }
 
   return Array.from(configured);
@@ -4234,6 +4243,26 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchZenmuxQuota();
     case 'xai':
       return fetchXaiQuota();
+    case 'alibaba-token-plan': {
+      try {
+        const { windows, models } = await fetchQwenCloudUsage();
+        return buildResult({
+          providerId,
+          providerName: 'Qwen Cloud',
+          ok: true,
+          configured: true,
+          usage: { windows, models },
+        });
+      } catch (error) {
+        return buildResult({
+          providerId,
+          providerName: 'Qwen Cloud',
+          ok: false,
+          configured: true,
+          error: error instanceof Error ? error.message : 'Request failed',
+        });
+      }
+    }
     default:
       return buildResult({
         providerId,
