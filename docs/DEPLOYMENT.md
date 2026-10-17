@@ -1,51 +1,37 @@
 # Deployment Policy
 
-## Source of truth (interim)
+## Source of truth
 
-**The patch-library model.** Until Phase 7 (npm link) is completed, the running
-install is stock `@openchamber/web@2.3.1` with local patches applied on top.
-The repo (`feat/memory-consolidation` branch) holds the durable form of those
-patches but is **not** deployed — it is four minor versions behind the install.
-The repo will become the source of truth once the 2.1.0 → 2.3.1 reconciliation
-is completed and `npm link` is established. That work is deferred pending a
-deliberate, conflict-resolved rebase; see `deferred-phase7-rebase.md`.
+**The repo is the source of truth.** The running install
+(`%APPDATA%/npm/node_modules/@openchamber/web`) is an `npm link` — a Junction
+pointing at `packages/web` in this repo (branch `reconcile/2.3.1-port`). Edits to
+the repo reach the running server on the next restart; there is no patch-library
+copy step any more.
 
 ## Update procedure
 
-When upstream publishes a new version and `npm update @openchamber/web` runs:
-
-1. **Stop the service.** `Stop-ScheduledTask -TaskName "dev.openchamber.web"`,
-   then kill the stale process if it survives (`Get-NetTCPConnection -LocalPort 3000`).
-2. **Check for patch loss.** Run `status.ps1`. If the install version changed,
-   the patches are gone.
-3. **Re-apply patches.** Use the backup-diff-copy procedure from the hardening
-   directive: for each patched file, restore from the repo copy, back up the new
-   install file, copy the repo file over, `node --check`.
-4. **Restart.** Start the task; verify a new PID on 3000.
-5. **Verify.** Run `status.ps1` again. Confirm `fallbacks_total` on `/health`
-   and `200_000` in `session-goal/runtime.js`.
+1. **Edit the repo.** The linked install is the same directory — no copy.
+2. **Restart.** `Stop-ScheduledTask -TaskName "dev.openchamber.web"` then
+   `Start-ScheduledTask -TaskName "dev.openchamber.web"`, or run
+   `~/.config/openchamber/bin/OpenChamber.ps1`. Verify a new PID on 3000.
+3. **Verify.** `status.ps1`, and the marker test: a comment dropped into
+   `session-goal/runtime.js` must appear through the junction, then vanish when
+   removed.
 
 ## Verification
 
-`C:\Users\Ross\.oio\bin\status.ps1` is the single command that proves what is
-running. Run it before and after every change. If reality and expectation
-differ, stop and fix the map before proceeding.
+`C:\Users\Ross\.oio\bin\status.ps1` proves what is running. The link itself is
+confirmed with `Get-Item <install>` → `LinkType: Junction`, `Target: <repo>/packages/web`.
 
 ## Rollback
 
-- **Revert a patched file:** copy `<file>.bak-<timestamp>` over the current file;
-  restart via the launcher.
-- **Revert the launcher:** copy
-  `C:\Users\Ross\.config\openchamber\bin\OpenChamber.ps1.bak-<timestamp>` over
-  the current launcher; restart.
-- **Revert the npm link (when Phase 7 lands):** `npm unlink -g @openchamber/web`
-  from the repo's `packages/web`, restore the install from
-  `@openchamber/web.bak-pre-link-*`, restart.
+- **Revert the npm link:** `npm unlink -g @openchamber/web` from `packages/web`,
+  restore the install from `@openchamber/web.bak-pre-link-*`, restart.
+- **Revert a file:** edit the repo — the linked install is the same file, so a
+  revert is an ordinary `git checkout`.
 
 ## Known constraint
 
 The scheduled task runs `S4U`/`Limited`. The detached `node.exe` holds a service
-token and **cannot be killed from a non-elevated shell**. This is why the
-launcher carries a pre-flight block that kills the stale process before starting
-a new one — the launcher runs under the same token and can therefore terminate
-its own predecessor.
+token and cannot be killed from a non-elevated shell; the launcher's pre-flight
+block kills the stale process before starting a new one.
